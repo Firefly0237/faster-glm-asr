@@ -1,0 +1,16 @@
+{
+  "schema_version": "asr-profiler-index-v0.1",
+  "git_commit": "<40-hex-commit>",
+  "environment_lock_sha256": "<64-hex-sha256>",
+  "profiles": [
+    {
+      "file": "custom-static-cache.nsys-rep",
+      "sha256": "<64-hex-sha256>",
+      "tool": "nsys",
+      "command_sha256": "<sha256-of-exact-argv-json>",
+      "manifest_sha256": "<64-hex-sha256>",
+      "implementation": "custom_static_cache",
+      "measurement_profile": "profiler_diagnostic"
+    }
+  ]
+}

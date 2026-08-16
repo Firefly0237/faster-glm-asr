@@ -1,0 +1,15 @@
+{
+  "schema_version": "decoder-training-data-manifest/1",
+  "source": "deterministic synthetic byte-pattern generator",
+  "intended_use": "systems throughput, checkpoint replay, and smoke validation only",
+  "prohibited_claims": [
+    "language-model quality",
+    "GLM-ASR training",
+    "production data quality"
+  ],
+  "generator": {
+    "implementation": "experiments/distributed_training/data.py::synthetic_stream",
+    "token_domain": "[0, 128)",
+    "motif_length": 257
+  }
+}

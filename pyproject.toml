@@ -1,0 +1,101 @@
+[build-system]
+requires = ["setuptools>=77", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "faster-glm-asr"
+version = "0.1.0.dev0"
+description = "Reproducible GLM-ASR inference experiments with explicit cache and benchmark controls"
+readme = "README.md"
+requires-python = ">=3.11,<3.13"
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
+authors = [{ name = "Firefly0237" }]
+keywords = ["automatic-speech-recognition", "glm-asr", "triton", "inference", "kv-cache"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+  "accelerate>=1.12,<1.13",
+  "huggingface-hub>=1.5,<1.6",
+  "numpy>=2.3,<2.4",
+  "safetensors>=0.8,<0.9",
+  "scipy>=1.17,<1.18",
+  "soundfile>=0.13,<0.14",
+  "torch>=2.10,<2.11",
+  "transformers>=5.14,<5.15",
+]
+
+[project.scripts]
+faster-glm-asr-transcribe = "faster_glm_asr.transcribe:main"
+faster-glm-asr-benchmark = "faster_glm_asr.benchmarking.runner:main"
+faster-glm-asr-compare = "faster_glm_asr.benchmarking.comparator:main"
+faster-glm-asr-plan = "faster_glm_asr.benchmarking.matrix_planner:main"
+faster-glm-asr-run-matrix = "faster_glm_asr.benchmarking.matrix_executor:main"
+faster-glm-asr-aggregate = "faster_glm_asr.benchmarking.matrix_aggregator:main"
+faster-glm-asr-check-public = "faster_glm_asr.benchmarking.public_artifact:main"
+faster-glm-asr-build-manifest = "faster_glm_asr.data.audio_manifest:main"
+faster-glm-asr-build-long-audio = "faster_glm_asr.data.long_audio:main"
+faster-glm-asr-prepare-librispeech = "faster_glm_asr.data.librispeech:main"
+faster-glm-asr-stitch = "faster_glm_asr.data.segment_stitch:main"
+
+[project.optional-dependencies]
+gpu = [
+  "nvidia-ml-py>=13.610,<14",
+  "triton>=3.6,<3.7; platform_system == 'Linux'",
+]
+data = [
+  "datasets>=4.5,<4.6",
+  "librosa>=0.11,<0.12",
+]
+dev = [
+  "build>=1.3,<2",
+  "mypy>=1.18,<2",
+  "pytest>=9,<10",
+  "pytest-cov>=7,<8",
+  "ruff>=0.15,<0.16",
+]
+
+[project.urls]
+Homepage = "https://github.com/Firefly0237/faster-glm-asr"
+Repository = "https://github.com/Firefly0237/faster-glm-asr"
+Issues = "https://github.com/Firefly0237/faster-glm-asr/issues"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+addopts = "-ra --strict-config --strict-markers"
+testpaths = ["tests"]
+
+[tool.coverage.run]
+branch = true
+source = ["faster_glm_asr"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+src = ["src", "tests", "tools"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+ignore = ["E501"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["faster_glm_asr"]
+
+[tool.mypy]
+python_version = "3.11"
+warn_unused_configs = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+no_implicit_optional = true
+check_untyped_defs = true

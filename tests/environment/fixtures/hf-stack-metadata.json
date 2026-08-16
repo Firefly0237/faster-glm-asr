@@ -1,0 +1,36 @@
+{
+  "schema_version": "pypi-interoperability-metadata-v1",
+  "retrieved_at": "2026-08-16T00:00:00Z",
+  "sources": {
+    "accelerate": "https://pypi.org/pypi/accelerate/1.12.0/json",
+    "datasets": "https://pypi.org/pypi/datasets/4.5.0/json",
+    "huggingface-hub": "https://pypi.org/pypi/huggingface-hub/1.5.0/json",
+    "safetensors": "https://pypi.org/pypi/safetensors/0.8.0/json",
+    "tokenizers": "https://pypi.org/pypi/tokenizers/0.22.2/json",
+    "transformers": "https://pypi.org/pypi/transformers/5.14.0/json"
+  },
+  "selected_versions": {
+    "accelerate": "1.12.0",
+    "datasets": "4.5.0",
+    "huggingface-hub": "1.5.0",
+    "safetensors": "0.8.0",
+    "tokenizers": "0.22.2",
+    "torch": "2.10.0",
+    "transformers": "5.14.0"
+  },
+  "interoperability_constraints": {
+    "accelerate": [
+      "torch>=2.0.0",
+      "huggingface-hub>=0.21.0",
+      "safetensors>=0.4.3"
+    ],
+    "datasets": [
+      "huggingface-hub>=0.25.0,<2.0"
+    ],
+    "transformers": [
+      "huggingface-hub>=1.5.0,<2.0",
+      "safetensors>=0.8.0",
+      "tokenizers>=0.22.0,<=0.23.0"
+    ]
+  }
+}

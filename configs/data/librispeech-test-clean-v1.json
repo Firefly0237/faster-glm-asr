@@ -1,0 +1,30 @@
+{
+  "schema_version": "public-asr-source-lock-v0.1",
+  "dataset": "LibriSpeech",
+  "subset": "test-clean",
+  "upstream_page": "https://www.openslr.org/12",
+  "archive_url": "https://www.openslr.org/resources/12/test-clean.tar.gz",
+  "archive_file": "test-clean.tar.gz",
+  "archive_size_bytes": 346663984,
+  "archive_md5": "32fa31d27d2e1cad72775fee3f4849a9",
+  "archive_sha256": "39fde525e59672dc6d1551919b1478f724438a95aa55f874b576be21967e6c23",
+  "upstream_checksum_url": "https://www.openslr.org/resources/12/md5sum.txt",
+  "archive_member_count": 2840,
+  "archive_root": "LibriSpeech",
+  "audio_format": "FLAC",
+  "sample_rate_hz": 16000,
+  "channels": 1,
+  "license": "CC-BY-4.0",
+  "license_file": "LibriSpeech/LICENSE.TXT",
+  "selection": {
+    "version": "librispeech-duration-stratified-v0.1",
+    "seed": "faster-glm-asr-public-quality-v1",
+    "canonical_matrix_per_bucket": 1,
+    "quality_subset_per_bucket": 8,
+    "duration_buckets_seconds": [
+      [0.0, 10.0],
+      [10.0, 20.0],
+      [20.0, 30.0]
+    ]
+  }
+}

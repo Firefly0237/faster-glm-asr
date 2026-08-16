@@ -1,0 +1,26 @@
+# Top-level dependencies for the RTX 3090 validation environment.
+# PyTorch is installed separately from the selected official CUDA wheel index.
+triton==3.6.0
+transformers==5.14.0
+# Transformers 5.14.x accepts a wider <=0.23.0 range; keep the validated
+# tokenizer implementation explicit so a fresh resolver cannot drift.
+tokenizers==0.22.2
+accelerate==1.12.0
+# Transformers 5.14.0 requires huggingface-hub>=1.5.0,<2.0 and
+# safetensors>=0.8.0. These exact candidates also satisfy Accelerate 1.12.0
+# and Datasets 4.5.0; do not lower either pin.
+huggingface-hub==1.5.0
+safetensors==0.8.0
+numpy==2.3.5
+scipy==1.17.0
+soundfile==0.13.1
+librosa==0.11.0
+datasets==4.5.0
+nvidia-ml-py==13.610.43
+pytest==9.0.2
+ruff==0.15.20
+build==1.3.0
+# Exact PEP 517 bootstrap tools. The full preflight installs these first from
+# the verified cache, then disables build isolation for the editable package.
+setuptools==80.10.2
+wheel==0.46.3

@@ -1,0 +1,2 @@
+id,audio_path,reference_path,language,collection,speaker_count,split,split_group_id,shareable,authorization_id,reference_quality,notes
+sample-0001,/replace/with/private/audio.wav,/replace/with/private/reference.txt,en,example,1,evaluation,recording-0001,false,,human-reviewed,replace this row before use

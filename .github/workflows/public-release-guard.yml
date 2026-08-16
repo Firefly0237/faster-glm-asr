@@ -1,0 +1,50 @@
+name: Public release guard
+
+"on":
+  pull_request:
+  push:
+    branches: ["main"]
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: public-release-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  source-safety:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out complete history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Run release-guard regression tests
+        run: python -m unittest discover -s tests/release -v
+
+      - name: Scan candidate tree and reachable history
+        run: >-
+          python tools/public_release_guard.py
+          --root .
+          --strict-release
+          --include-history
+
+      - name: Enforce final metadata on version tags
+        if: startsWith(github.ref, 'refs/tags/')
+        run: >-
+          python tools/public_release_guard.py
+          --root .
+          --strict-release
+          --include-history

@@ -1,0 +1,17 @@
+# CPU-only repository checks. PyTorch is installed separately from its official
+# CPU wheel index; CUDA-only dependencies remain in the frozen GPU environment.
+# Keep the portable runtime stack aligned with rtx3090-common.in so CI does not
+# silently exercise newer Transformers or scientific-library patch releases.
+accelerate==1.12.0
+build==1.3.0
+huggingface-hub==1.5.0
+numpy==2.3.5
+pytest==9.0.2
+ruff==0.15.20
+safetensors==0.8.0
+scipy==1.17.0
+setuptools==80.10.2
+soundfile==0.13.1
+tokenizers==0.22.2
+transformers==5.14.0
+wheel==0.46.3

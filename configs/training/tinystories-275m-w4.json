@@ -1,0 +1,55 @@
+{
+  "model": {
+    "vocab_size": 260,
+    "dim": 1280,
+    "n_layers": 14,
+    "n_heads": 20,
+    "n_kv_heads": 4,
+    "hidden_dim": 4096,
+    "max_seq_len": 512,
+    "rope_theta": 10000.0,
+    "rope_fraction": 1.0,
+    "rms_norm_eps": 1e-05,
+    "dropout": 0.0
+  },
+  "training": {
+    "experiment_name": "decoder-systems-275m-tinystories-w4",
+    "seed": 20260816,
+    "steps": 200,
+    "micro_batch_size": 4,
+    "sequence_length": 512,
+    "gradient_accumulation_steps": 4,
+    "learning_rate": 0.0001,
+    "min_lr_ratio": 0.1,
+    "warmup_steps": 10,
+    "weight_decay": 0.1,
+    "beta1": 0.9,
+    "beta2": 0.95,
+    "adam_eps": 1e-08,
+    "optimizer_impl": "single_tensor",
+    "grad_clip": 1.0,
+    "eval_interval": 20,
+    "eval_batches": 8,
+    "checkpoint_interval": 50,
+    "timing_warmup_steps": 10,
+    "dtype": "bf16",
+    "compile_model": false,
+    "deterministic_algorithms": false,
+    "allow_tf32": true,
+    "expected_world_size": 4,
+    "expected_tokens_per_update": 32768,
+    "expected_parameter_count": 275621120,
+    "require_source_lock": true,
+    "synthetic_train_tokens": 1048576,
+    "synthetic_validation_tokens": 65536
+  },
+  "data": {
+    "mode": "byte_files",
+    "train_files": [
+      "artifacts/private/training-data/derived/tinystories-64mib-4mib-v1/tinystories-train-64mib.bin"
+    ],
+    "validation_files": [
+      "artifacts/private/training-data/derived/tinystories-64mib-4mib-v1/tinystories-validation-4mib.bin"
+    ]
+  }
+}

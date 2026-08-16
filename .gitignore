@@ -1,0 +1,65 @@
+# Python bytecode and tool caches
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# Environments and local configuration
+.venv/
+venv/
+env/
+.env
+.env.*
+!.env.example
+*.local
+
+# Build and packaging output
+build/
+dist/
+*.egg-info/
+*.whl
+
+# Editors and operating systems
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Private or machine-local experiment material
+/inputs/private/
+/data/
+/datasets/
+/models/
+/checkpoints/
+/artifacts/
+/outputs/
+/runs/
+/wandb/
+/logs/
+
+# Audio, weights, profiles, and archives must not enter the source release
+*.wav
+*.flac
+*.mp3
+*.m4a
+*.aac
+*.ogg
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+*.onnx
+*.nsys-rep
+*.ncu-rep
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+*.7z

@@ -1,0 +1,4 @@
+# Sanctioned fallback for a host that fails the cu128 driver threshold but
+# satisfies the contract's cu126 minimum. Do not combine CUDA branches.
+--index-url https://download.pytorch.org/whl/cu126
+torch==2.10.0

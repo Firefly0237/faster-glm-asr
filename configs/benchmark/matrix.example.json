@@ -1,0 +1,35 @@
+{
+  "schema_version": "asr-benchmark-matrix-config-v0.1",
+  "python_executable": "${PYTHON_EXECUTABLE}",
+  "benchmark_script": "src/faster_glm_asr/benchmarking/runner.py",
+  "manifest": "artifacts/private/cache/manifests/librispeech-test-clean-3-v1/manifest.jsonl",
+  "environment_lock": "artifacts/private/environment/runtime.freeze.txt",
+  "model_snapshot_root": "artifacts/private/cache/model/glm-asr-nano-2512",
+  "model_snapshot_manifest": "artifacts/private/cache/manifests/model.json",
+  "readiness_report": "artifacts/private/rtx3090-readiness/full.json",
+  "output_root": "artifacts/private/results/matrix/librispeech-test-clean-3-v1",
+  "dataset_label": "librispeech-test-clean-3-v1",
+  "artifact_scope": "private",
+  "model_name": "zai-org/GLM-ASR-Nano-2512",
+  "model_revision": "61ba4e0b3309b6656edea3e93e419f7bd5c61957",
+  "implementations": [
+    "hf_cached",
+    "hf_no_cache",
+    "custom_full_prefix",
+    "custom_greedy_full_prefix",
+    "custom_tuple_cache",
+    "custom_static_cache"
+  ],
+  "profiles": [
+    "canonical_latency",
+    "request_memory",
+    "diagnostic_phase"
+  ],
+  "outer_passes": 3,
+  "seed": 20260815,
+  "warmup": 3,
+  "repeats": 10,
+  "max_new_tokens": 128,
+  "nvml_sample_ms": 10.0,
+  "include_command_argv": true
+}

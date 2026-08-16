@@ -1,0 +1,4 @@
+# Install this file before rtx3090-common.in when the host driver satisfies
+# the contract's cu128 minimum. Do not combine it with the cu126 branch.
+--index-url https://download.pytorch.org/whl/cu128
+torch==2.10.0

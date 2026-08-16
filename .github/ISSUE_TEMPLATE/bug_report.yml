@@ -1,0 +1,39 @@
+name: Bug report
+description: Report a reproducible correctness or runtime problem
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: >-
+        Do not include credentials, private audio, model files, or personal data.
+        Report security issues through GitHub private vulnerability reporting.
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: What happened, and what did you expect?
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction
+      description: Use synthetic or public inputs and include the exact command.
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Include package revision, OS, Python, PyTorch, CUDA/driver, and GPU.
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Sanitized evidence
+      description: Include relevant traceback or validator output after removing sensitive values.
+    validations:
+      required: true

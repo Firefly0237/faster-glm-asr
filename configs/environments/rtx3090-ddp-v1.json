@@ -1,0 +1,102 @@
+{
+  "schema_version": "gpu-readiness-contract-v1",
+  "environment_id": "rtx3090-ddp-v1",
+  "status": "candidate-until-accepted-on-target-host",
+  "target": {
+    "os_id": "ubuntu",
+    "os_version": "22.04",
+    "architecture": "x86_64",
+    "python_min_inclusive": "3.11.0",
+    "python_max_exclusive": "3.12.0",
+    "gpu_name_contains": "RTX 3090",
+    "gpu_count": 4,
+    "gpu_memory_min_mib": 23000,
+    "compute_capability": "8.6",
+    "system_ram_min_gib": 128,
+    "disk_free_min_gib": 300,
+    "dev_shm_min_gib": 1,
+    "idle_temperature_max_c": 65,
+    "stress_temperature_max_c": 85,
+    "idle_memory_used_max_mib": 1024,
+    "idle_utilization_max_percent": 10,
+    "preferred_power_limit_min_w": 300,
+    "nccl_min_bus_bandwidth_gb_per_s": 1.0
+  },
+  "cuda_branches": [
+    {
+      "name": "cu128",
+      "priority": 1,
+      "minimum_linux_driver": "570.26.0",
+      "torch_cuda_prefix": "12.8",
+      "torch_index_url": "https://download.pytorch.org/whl/cu128",
+      "requirements_file": "requirements/rtx3090-cu128.in"
+    },
+    {
+      "name": "cu126",
+      "priority": 2,
+      "minimum_linux_driver": "560.28.3",
+      "torch_cuda_prefix": "12.6",
+      "torch_index_url": "https://download.pytorch.org/whl/cu126",
+      "requirements_file": "requirements/rtx3090-cu126.in"
+    }
+  ],
+  "common_requirements_file": "requirements/rtx3090-common.in",
+  "packages": {
+    "torch": "2.10.0",
+    "triton": "3.6.0",
+    "transformers": "5.14.0",
+    "tokenizers": "0.22.2",
+    "accelerate": "1.12.0",
+    "huggingface-hub": "1.5.0",
+    "safetensors": "0.8.0",
+    "numpy": "2.3.5",
+    "scipy": "1.17.0",
+    "soundfile": "0.13.1",
+    "librosa": "0.11.0",
+    "datasets": "4.5.0",
+    "nvidia-ml-py": "13.610.43",
+    "setuptools": "80.10.2",
+    "wheel": "0.46.3"
+  },
+  "model": {
+    "repo_id": "zai-org/GLM-ASR-Nano-2512",
+    "revision": "61ba4e0b3309b6656edea3e93e419f7bd5c61957"
+  },
+  "network_endpoints": [
+    "https://pypi.org/simple/",
+    "https://download.pytorch.org/whl/{cuda_branch}/",
+    "https://huggingface.co/zai-org/GLM-ASR-Nano-2512/resolve/61ba4e0b3309b6656edea3e93e419f7bd5c61957/config.json"
+  ],
+  "distributed": {
+    "backend": "nccl",
+    "world_size": 4,
+    "all_reduce_buffer_mib": 64,
+    "all_reduce_warmup_iterations": 5,
+    "all_reduce_measured_iterations": 20,
+    "minimum_stress_seconds": 300,
+    "minimum_thermal_samples_per_gpu": 240,
+    "p2p_policy": "complete-directed-matrix-required-for-pure-pass;false-entries-are-observations-not-warnings"
+  },
+  "xid_health_evidence": {
+    "lookback_seconds": 900,
+    "provider_schema_version": "provider-gpu-health-evidence-v1",
+    "max_file_bytes": 1048576,
+    "max_future_skew_seconds": 300,
+    "max_reporting_delay_seconds": 3600,
+    "max_finalization_lead_seconds": 30
+  },
+  "provenance": {
+    "wheel_manifest_kind": "wheel-cache",
+    "model_manifest_kind": "model-snapshot",
+    "freeze_policy": "exact-pip-freeze-all-before-and-after-preflight",
+    "default_artifact_root": "artifacts/private/rtx3090-readiness",
+    "raw_uuid_policy": "retain-exact-values-in-private-artifact;never-fake-anonymize"
+  },
+  "rental_policy": {
+    "initial_billing_mode": "hourly",
+    "host_phase_authority": "diagnostic-only;never-authorizes-day-rental",
+    "day_rental_requires_full_status": "pass",
+    "warning_status": "manual-review-required",
+    "full_status_required_before_training": "pass"
+  }
+}

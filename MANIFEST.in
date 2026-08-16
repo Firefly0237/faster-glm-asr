@@ -1,0 +1,4 @@
+# The GitHub repository carries the complete test and experiment suite.  The
+# Python sdist is intentionally package-focused; avoid shipping a misleading
+# partial subset selected by setuptools' implicit test-file heuristics.
+prune tests

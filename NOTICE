@@ -1,0 +1,53 @@
+Faster GLM-ASR
+Copyright 2026 Faster GLM-ASR contributors
+
+This distribution may contain original work, adaptations, or references from
+the following upstream projects. Component-level source headers and dependency
+metadata take precedence over this informational notice.
+
+University of Edinburgh Machine Learning Systems reference implementation
+  Source: https://github.com/ed-aisys/edin-mls-26-spring
+  Reference revision: 525c3c4c3c584ab4c9e0ec7ff8d8ee202933d374
+  License: CC0 1.0 Universal in the referenced repository
+  Use: public systems reference and, where identified by source history or
+       file headers, the starting point for adapted implementation code
+  Relevant upstream contributors include Yangshen Deng and Yeqi Huang
+  (Chivier Humber).
+  Lineage: the source repository from which this standalone tree was prepared
+           carries the same CC0 1.0 Universal license text
+
+GLM-ASR
+  Source: https://github.com/zai-org/GLM-ASR
+  License: Apache License 2.0 for the referenced source repository
+  Use: model architecture, public interfaces, and reference implementation
+
+GLM-ASR-Nano-2512 model artifacts
+  Source: https://huggingface.co/zai-org/GLM-ASR-Nano-2512
+  Reference revision: 61ba4e0b3309b6656edea3e93e419f7bd5c61957
+  License: MIT as declared by the model card at the selected revision;
+           model artifacts are not bundled here
+
+TinyStories dataset
+  Source: https://huggingface.co/datasets/roneneldan/TinyStories
+  Reference revision: f54c09fd23315a6f9c86f9dc80f725de7d8f9c64
+  License: CDLA-Sharing-1.0 as declared by the pinned dataset card
+  Use: optional private runtime input for the isolated decoder systems
+       experiment; source and derived dataset bytes are not bundled here
+
+LibriSpeech test-clean
+  Source: https://www.openslr.org/12
+  Archive: test-clean.tar.gz, upstream MD5
+           32fa31d27d2e1cad72775fee3f4849a9
+  License: Creative Commons Attribution 4.0 International
+  Use: optional public-source ASR quality input; audio and transcripts are
+       downloaded separately and are not bundled here
+
+Hugging Face Transformers
+  Source: https://github.com/huggingface/transformers
+  License: Apache License 2.0
+  Use: public GLM-ASR interfaces and behavior used as a compatibility reference
+
+The University of Edinburgh, Z.ai, Hugging Face, and their contributors do not
+endorse this project. Names and trademarks are used only to describe provenance
+and interoperability. No model weights, private audio, or third-party datasets
+are distributed with this source repository.
