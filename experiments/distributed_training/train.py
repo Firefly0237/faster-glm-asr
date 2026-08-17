@@ -26,6 +26,8 @@ from torch.nn.parallel import DistributedDataParallel
 from .data import RandomWindowBatcher, load_byte_stream, synthetic_stream
 from .model import CausalLM, ModelConfig
 
+DETERMINISTIC_CUBLAS_WORKSPACE_CONFIG = ":4096:8"
+
 
 @dataclass(frozen=True)
 class TrainingConfig:
@@ -354,6 +356,21 @@ def _optimizer(model: CausalLM, config: TrainingConfig) -> torch.optim.Optimizer
         foreach=False,
         fused=False,
     )
+
+
+def _configure_deterministic_runtime(enabled: bool) -> str | None:
+    observed = os.environ.get("CUBLAS_WORKSPACE_CONFIG")
+    if not enabled:
+        return observed
+    if observed is None:
+        os.environ["CUBLAS_WORKSPACE_CONFIG"] = DETERMINISTIC_CUBLAS_WORKSPACE_CONFIG
+        return DETERMINISTIC_CUBLAS_WORKSPACE_CONFIG
+    if observed != DETERMINISTIC_CUBLAS_WORKSPACE_CONFIG:
+        raise RuntimeError(
+            "deterministic training requires CUBLAS_WORKSPACE_CONFIG="
+            f"{DETERMINISTIC_CUBLAS_WORKSPACE_CONFIG}, observed {observed!r}"
+        )
+    return observed
 
 
 def _optimizer_parameter_names(
@@ -778,6 +795,7 @@ def _runtime_environment(
         "git_dirty": git_dirty,
         "deterministic_algorithms": torch.are_deterministic_algorithms_enabled(),
         "cuda_visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES"),
+        "cublas_workspace_config": os.environ.get("CUBLAS_WORKSPACE_CONFIG"),
         "nccl_environment": {
             key: value for key, value in sorted(os.environ.items()) if key.startswith("NCCL_")
         },
@@ -892,6 +910,9 @@ def _main(argv: Sequence[str] | None = None) -> int:
     config_bytes = args.config.read_bytes()
     config_sha256 = hashlib.sha256(config_bytes).hexdigest()
     model_config, training, data_config = _load_config(args.config)
+    # cuBLAS reads this process setting when it creates a workspace.  Apply the
+    # deterministic recipe before process-group setup can initialize CUDA.
+    _configure_deterministic_runtime(training.deterministic_algorithms)
     rank, local_rank, world_size, device = _distributed_context(args.device)
     if training.expected_world_size is not None and world_size != training.expected_world_size:
         raise RuntimeError(

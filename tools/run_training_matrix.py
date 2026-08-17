@@ -561,6 +561,7 @@ def _source_lock_command(args: argparse.Namespace) -> int:
             "cpu-smoke.json",
             "tinystories-275m-w4.json",
             "resume-275m-w4.json",
+            "trajectory-275m-w4.json",
         )
     ]
     if (args.readiness_report is None) != (args.preflight_report is None):
@@ -876,6 +877,8 @@ def _single_process_training_command(
 def _trajectory_command(args: argparse.Namespace) -> int:
     config_validation = validate_training_config(args.config)
     training = config_validation["document"]["training"]
+    if training["deterministic_algorithms"] is not True:
+        raise ValueError("trajectory config must enable deterministic_algorithms")
     if (
         args.stop_after_step <= 0
         or args.stop_after_step >= training["steps"]
@@ -1152,7 +1155,7 @@ def _parser() -> argparse.ArgumentParser:
     trajectory.add_argument(
         "--config",
         type=Path,
-        default=DEFAULT_CONFIG_DIR / "resume-275m-w4.json",
+        default=DEFAULT_CONFIG_DIR / "trajectory-275m-w4.json",
     )
     trajectory.add_argument("--artifact-root", type=Path, default=DEFAULT_ARTIFACT_ROOT)
     trajectory.add_argument(

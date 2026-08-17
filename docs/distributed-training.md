@@ -245,6 +245,16 @@ duplicate steps, missing planned-stop/run-end events, any per-step loss
 difference, or any final model, AdamW, rank process-state, RNG, or
 train/validation cursor digest difference.
 
+Trajectory evidence uses the dedicated `trajectory-275m-w4.json` config. It
+enables PyTorch deterministic algorithms while deliberately retaining TF32 and
+automatic SDPA selection for the first attributable determinism check. Before
+distributed initialization, each worker sets an absent
+`CUBLAS_WORKSPACE_CONFIG` to `:4096:8` or rejects any conflicting value, and
+records the effective value in `rank_environments`. The strong-scaling and
+isolated-profiler configs remain unchanged. If this strict first-stage recipe
+raises on an unsupported operation or still diverges, TF32 and SDPA backend
+selection are separate follow-up experiments rather than bundled changes.
+
 The CPU smoke config exercises the same code in CI, but it is not evidence that
 the four-rank path passed.
 

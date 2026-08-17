@@ -231,6 +231,14 @@ class DecoderTrainingReleaseTest(unittest.TestCase):
         self.assertEqual({item["measurement_eligible_steps"] for item in matrix}, {30})
         for item in matrix:
             self.assertNotIn("torch_profiler", item["document"]["training"])
+            self.assertFalse(item["document"]["training"]["deterministic_algorithms"])
+            self.assertTrue(item["document"]["training"]["allow_tf32"])
+
+        trajectory = validate_training_config(CONFIG_DIR / "trajectory-275m-w4.json")
+        profiler = validate_training_config(CONFIG_DIR / "resume-275m-w4.json")
+        self.assertTrue(trajectory["document"]["training"]["deterministic_algorithms"])
+        self.assertTrue(trajectory["document"]["training"]["allow_tf32"])
+        self.assertFalse(profiler["document"]["training"]["deterministic_algorithms"])
 
     def test_real_data_config_is_distinct_and_emits_periodic_validation(self) -> None:
         real_data = validate_training_config(CONFIG_DIR / "tinystories-275m-w4.json")
@@ -520,6 +528,12 @@ class DecoderTrainingReleaseTest(unittest.TestCase):
             trajectory_plan = json.loads(trajectory.stdout)
             self.assertEqual(trajectory_plan["world_size"], 4)
             self.assertEqual(len(trajectory_plan["commands"]), 3)
+            self.assertTrue(
+                all(
+                    any("trajectory-275m-w4.json" in part for part in command)
+                    for command in trajectory_plan["commands"]
+                )
+            )
             self.assertIn("--stop-after-step", trajectory_plan["commands"][1])
             self.assertIn("--resume", trajectory_plan["commands"][2])
             profile = subprocess.run(
@@ -540,6 +554,7 @@ class DecoderTrainingReleaseTest(unittest.TestCase):
             self.assertEqual(profile.returncode, 0, profile.stderr)
             profile_plan = json.loads(profile.stdout)
             self.assertFalse(profile_plan["canonical_scaling_aggregate_eligible"])
+            self.assertTrue(any("resume-275m-w4.json" in part for part in profile_plan["command"]))
             self.assertIn("profiler", Path(profile_plan["trace_dir"]).parts)
             self.assertIn("--torch-profiler-dir", profile_plan["command"])
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import json
 import math
+import os
 import random
 import tempfile
 import unittest
@@ -29,7 +30,9 @@ if torch is not None:
         RotaryEmbedding,
     )
     from experiments.distributed_training.train import (
+        DETERMINISTIC_CUBLAS_WORKSPACE_CONFIG,
         TrainingConfig,
+        _configure_deterministic_runtime,
         _data_fingerprint,
         _json_safe_cuda_uuid,
         _load_checkpoint,
@@ -43,6 +46,32 @@ if torch is not None:
 
 @unittest.skipIf(torch is None, "PyTorch is not installed")
 class DecoderTrainingCoreTest(unittest.TestCase):
+    def test_deterministic_runtime_sets_and_strictly_checks_cublas_workspace(self) -> None:
+        with mock.patch.dict(os.environ, {}, clear=True):
+            self.assertIsNone(_configure_deterministic_runtime(False))
+            self.assertNotIn("CUBLAS_WORKSPACE_CONFIG", os.environ)
+            self.assertEqual(
+                _configure_deterministic_runtime(True),
+                DETERMINISTIC_CUBLAS_WORKSPACE_CONFIG,
+            )
+            self.assertEqual(
+                os.environ["CUBLAS_WORKSPACE_CONFIG"],
+                DETERMINISTIC_CUBLAS_WORKSPACE_CONFIG,
+            )
+            self.assertEqual(
+                _configure_deterministic_runtime(True),
+                DETERMINISTIC_CUBLAS_WORKSPACE_CONFIG,
+            )
+        with (
+            mock.patch.dict(
+                os.environ,
+                {"CUBLAS_WORKSPACE_CONFIG": ":16:8"},
+                clear=True,
+            ),
+            self.assertRaisesRegex(RuntimeError, "deterministic training requires"),
+        ):
+            _configure_deterministic_runtime(True)
+
     def test_cuda_uuid_observation_is_json_safe_and_type_strict(self) -> None:
         class FakeCUuuid:
             def __init__(self, value: str) -> None:
