@@ -34,6 +34,9 @@ NVIDIA_SMI_INVENTORY_COMMAND = [
     "--query-gpu=index,uuid,pci.bus_id,name,memory.total,driver_version",
     "--format=csv,noheader,nounits",
 ]
+GPU_UUID_PATTERN = re.compile(
+    r"(?i:(?:GPU-)?([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}))"
+)
 
 
 def _capture(command: Sequence[str]) -> dict[str, Any]:
@@ -59,12 +62,17 @@ def _capture(command: Sequence[str]) -> dict[str, Any]:
 
 
 def _canonical_gpu_uuid(value: Any) -> str | None:
-    if not isinstance(value, str) or not value.strip():
+    if isinstance(value, str):
+        raw = value
+    else:
+        cuuuid_type = getattr(torch._C, "_CUuuid", None)
+        if not isinstance(cuuuid_type, type) or type(value) is not cuuuid_type:
+            return None
+        raw = str(value)
+    match = GPU_UUID_PATTERN.fullmatch(raw)
+    if match is None:
         return None
-    normalized = value.strip().lower()
-    if normalized.startswith("gpu-"):
-        normalized = normalized[4:]
-    return normalized or None
+    return match.group(1).lower()
 
 
 def _canonical_pci_bus_id(value: Any) -> str | None:
