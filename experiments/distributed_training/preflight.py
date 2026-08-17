@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import subprocess
 import time
 from collections.abc import Sequence
@@ -28,6 +29,11 @@ PREFLIGHT_SCOPE = "single-node decoder systems experiment"
 PREFLIGHT_PATH = Path(__file__).resolve()
 TRAIN_PATH = PREFLIGHT_PATH.with_name("train.py")
 REPOSITORY_ROOT = PREFLIGHT_PATH.parents[2]
+NVIDIA_SMI_INVENTORY_COMMAND = [
+    "nvidia-smi",
+    "--query-gpu=index,uuid,pci.bus_id,name,memory.total,driver_version",
+    "--format=csv,noheader,nounits",
+]
 
 
 def _capture(command: Sequence[str]) -> dict[str, Any]:
@@ -50,6 +56,116 @@ def _capture(command: Sequence[str]) -> dict[str, Any]:
             "command": list(command),
             "error": f"{type(exc).__name__}: {exc}",
         }
+
+
+def _canonical_gpu_uuid(value: Any) -> str | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    normalized = value.strip().lower()
+    if normalized.startswith("gpu-"):
+        normalized = normalized[4:]
+    return normalized or None
+
+
+def _canonical_pci_bus_id(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    match = re.fullmatch(
+        r"(?:[0-9a-fA-F]{4,8}:)?[0-9a-fA-F]{2}:[0-9a-fA-F]{2}\.[0-7]",
+        value.strip(),
+    )
+    return match.group(0).lower() if match else None
+
+
+def _parse_nvidia_smi_inventory(capture: dict[str, Any]) -> list[dict[str, Any]]:
+    if capture.get("returncode") != 0:
+        detail = capture.get("error") or capture.get("stderr") or "unknown error"
+        raise ValueError(f"nvidia-smi identity query failed: {detail}")
+    stdout = capture.get("stdout")
+    if not isinstance(stdout, str) or not stdout.strip():
+        raise ValueError("nvidia-smi identity query returned no GPU rows")
+    rows: list[dict[str, Any]] = []
+    for line_number, line in enumerate(stdout.splitlines(), start=1):
+        columns = [column.strip() for column in line.split(",")]
+        if len(columns) != 6:
+            raise ValueError(
+                f"nvidia-smi identity row {line_number} has {len(columns)} columns, expected 6"
+            )
+        try:
+            index = int(columns[0])
+        except ValueError as exc:
+            raise ValueError(
+                f"nvidia-smi identity row {line_number} has an invalid GPU index"
+            ) from exc
+        uuid = _canonical_gpu_uuid(columns[1])
+        pci_bus_id = _canonical_pci_bus_id(columns[2])
+        if index < 0 or uuid is None or pci_bus_id is None:
+            raise ValueError(
+                f"nvidia-smi identity row {line_number} has an invalid index, UUID, or PCI BDF"
+            )
+        rows.append(
+            {
+                "index": index,
+                "uuid": columns[1],
+                "canonical_uuid": uuid,
+                "pci_bus_id": pci_bus_id,
+            }
+        )
+    for key in ("index", "canonical_uuid", "pci_bus_id"):
+        values = [row[key] for row in rows]
+        if len(set(values)) != len(values):
+            raise ValueError(f"nvidia-smi identity query contains duplicate {key} values")
+    return rows
+
+
+def _resolve_rank_gpu_binding(
+    *,
+    local_rank: int,
+    device_index: int | None,
+    selected_properties: Any,
+    visible_properties: Sequence[Any],
+    inventory_rows: Sequence[dict[str, Any]],
+    expected_world_size: int,
+) -> dict[str, Any]:
+    """Bind one CUDA logical device to a physical UUID/BDF without index assumptions."""
+    if device_index is None or device_index != local_rank:
+        raise ValueError(
+            f"LOCAL_RANK={local_rank} does not select CUDA logical device index {device_index}"
+        )
+    if len(visible_properties) != expected_world_size:
+        raise ValueError(
+            f"CUDA exposes {len(visible_properties)} logical devices, expected {expected_world_size}"
+        )
+    if len(inventory_rows) != expected_world_size:
+        raise ValueError(
+            f"nvidia-smi exposes {len(inventory_rows)} physical GPUs, expected {expected_world_size}"
+        )
+    if sorted(int(row["index"]) for row in inventory_rows) != list(range(expected_world_size)):
+        raise ValueError("nvidia-smi physical GPU indexes are not the expected contiguous set")
+    visible_uuids = [
+        _canonical_gpu_uuid(getattr(item, "uuid", None)) for item in visible_properties
+    ]
+    if any(value is None for value in visible_uuids):
+        raise ValueError("every CUDA logical device must expose a UUID")
+    canonical_visible_uuids = [str(value) for value in visible_uuids]
+    if len(set(canonical_visible_uuids)) != expected_world_size:
+        raise ValueError("CUDA logical devices expose duplicate UUIDs")
+    selected_uuid = _canonical_gpu_uuid(getattr(selected_properties, "uuid", None))
+    if selected_uuid is None:
+        raise ValueError("the selected CUDA device does not expose a UUID")
+    if selected_uuid != canonical_visible_uuids[device_index]:
+        raise ValueError("the selected CUDA device UUID does not match its logical device index")
+    rows_by_uuid = {str(row["canonical_uuid"]): row for row in inventory_rows}
+    if set(canonical_visible_uuids) != set(rows_by_uuid):
+        raise ValueError("CUDA-visible UUIDs do not exactly match the nvidia-smi inventory")
+    row = rows_by_uuid[selected_uuid]
+    return {
+        "nvidia_smi_index": int(row["index"]),
+        "uuid": str(row["uuid"]),
+        "canonical_uuid": selected_uuid,
+        "pci_bus_id": str(row["pci_bus_id"]),
+        "visible_cuda_uuids": canonical_visible_uuids,
+    }
 
 
 def _all_reduce_probe(
@@ -145,21 +261,48 @@ def _main(argv: Sequence[str] | None = None) -> int:
     _shared_filesystem_preflight(output.parent, rank, world_size)
     local_environment = _runtime_environment(device, rank, local_rank)
     properties = torch.cuda.get_device_properties(device)
-    pci_domain = getattr(properties, "pci_domain_id", None)
-    pci_bus = getattr(properties, "pci_bus_id", None)
-    pci_device = getattr(properties, "pci_device_id", None)
-    pci_bus_id = (
-        f"{int(pci_domain):04x}:{int(pci_bus):02x}:{int(pci_device):02x}.0"
-        if all(isinstance(value, int) and value >= 0 for value in (pci_domain, pci_bus, pci_device))
-        else None
-    )
+    inventory_capture_holder: list[Any] = [
+        _capture(NVIDIA_SMI_INVENTORY_COMMAND) if rank == 0 else None
+    ]
+    dist.broadcast_object_list(inventory_capture_holder, src=0)
+    nvidia_smi_inventory = inventory_capture_holder[0]
+    binding: dict[str, Any] | None = None
+    binding_error: str | None = None
+    try:
+        if not isinstance(nvidia_smi_inventory, dict):
+            raise ValueError("rank 0 did not broadcast a valid nvidia-smi capture")
+        inventory_rows = _parse_nvidia_smi_inventory(nvidia_smi_inventory)
+        visible_properties = [
+            torch.cuda.get_device_properties(index) for index in range(torch.cuda.device_count())
+        ]
+        binding = _resolve_rank_gpu_binding(
+            local_rank=local_rank,
+            device_index=device.index,
+            selected_properties=properties,
+            visible_properties=visible_properties,
+            inventory_rows=inventory_rows,
+            expected_world_size=world_size,
+        )
+    except (AttributeError, TypeError, ValueError) as exc:
+        binding_error = f"{type(exc).__name__}: {exc}"
+    binding_record = {
+        "rank": rank,
+        "local_rank": local_rank,
+        "device_index": device.index,
+        "error": binding_error,
+        "nvidia_smi_index": binding["nvidia_smi_index"] if binding else None,
+        "canonical_uuid": binding["canonical_uuid"] if binding else None,
+        "pci_bus_id": binding["pci_bus_id"] if binding else None,
+        "visible_cuda_uuids": binding["visible_cuda_uuids"] if binding else None,
+    }
+    binding_records = _gather_rank_records(binding_record, world_size)
     local_identity = {
         "rank": rank,
         "local_rank": local_rank,
         "hostname": local_environment["hostname"],
         "name": properties.name,
-        "uuid": str(getattr(properties, "uuid", "")) or None,
-        "pci_bus_id": pci_bus_id,
+        "uuid": binding["uuid"] if binding else None,
+        "pci_bus_id": binding["pci_bus_id"] if binding else None,
         "total_memory_bytes": properties.total_memory,
         "compute_capability": [properties.major, properties.minor],
         "bf16_supported": torch.cuda.is_bf16_supported(),
@@ -171,11 +314,23 @@ def _main(argv: Sequence[str] | None = None) -> int:
         failures.append("all ranks must be on one host")
     if sorted(int(item["local_rank"]) for item in identities) != list(range(world_size)):
         failures.append("LOCAL_RANK values must map one-to-one onto visible devices")
-    device_identifiers = [item["uuid"] or item["pci_bus_id"] for item in identities]
-    if not all(device_identifiers):
-        failures.append("every rank must expose a CUDA UUID or PCI bus ID")
-    elif len(set(device_identifiers)) != world_size:
-        failures.append("CUDA device identities are not unique across ranks")
+    for record in binding_records:
+        if record["error"] is not None:
+            failures.append(f"rank {record['rank']} GPU identity binding failed: {record['error']}")
+    valid_bindings = [record for record in binding_records if record["error"] is None]
+    if len(valid_bindings) == world_size:
+        visible_orders = {tuple(record["visible_cuda_uuids"]) for record in valid_bindings}
+        if len(visible_orders) != 1:
+            failures.append("ranks do not share the same CUDA-visible UUID ordering")
+        for key in ("nvidia_smi_index", "canonical_uuid", "pci_bus_id"):
+            if len({record[key] for record in valid_bindings}) != world_size:
+                failures.append(f"rank-to-GPU bindings do not have unique {key} values")
+    rank_uuids = [_canonical_gpu_uuid(item["uuid"]) for item in identities]
+    rank_pci_ids = [_canonical_pci_bus_id(item["pci_bus_id"]) for item in identities]
+    if any(value is None for value in rank_uuids) or len(set(rank_uuids)) != world_size:
+        failures.append("every rank must expose one unique nvidia-smi GPU UUID")
+    if any(value is None for value in rank_pci_ids) or len(set(rank_pci_ids)) != world_size:
+        failures.append("every rank must expose one unique nvidia-smi PCI BDF")
     for item in identities:
         if args.expected_gpu_name.lower() not in str(item["name"]).lower():
             failures.append(
@@ -239,13 +394,7 @@ def _main(argv: Sequence[str] | None = None) -> int:
         "rank_inventory": identities,
         "peer_access": peer_access,
         "all_reduce": all_reduce,
-        "nvidia_smi_inventory": _capture(
-            [
-                "nvidia-smi",
-                "--query-gpu=index,uuid,pci.bus_id,name,memory.total,driver_version",
-                "--format=csv,noheader,nounits",
-            ]
-        ),
+        "nvidia_smi_inventory": nvidia_smi_inventory,
         "nvidia_smi_topology": _capture(["nvidia-smi", "topo", "-m"]),
         "nccl_environment": {
             key: value for key, value in sorted(os.environ.items()) if key.startswith("NCCL_")

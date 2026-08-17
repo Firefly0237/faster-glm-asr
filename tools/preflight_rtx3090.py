@@ -1402,8 +1402,11 @@ def _local_xid_source(
     window_start: datetime,
     window_end: datetime,
     environment: Mapping[str, str],
+    used_sudo: bool = False,
 ) -> dict[str, Any]:
-    command_result = run_command(command, timeout_s=15, environment=environment)
+    query_command = list(command)
+    probe_command = list(readability_command)
+    command_result = run_command(query_command, timeout_s=15, environment=environment)
     stdout = command_result["stdout"]
     stderr = command_result["stderr"]
     combined = f"{stdout}\n{stderr}".casefold()
@@ -1426,7 +1429,7 @@ def _local_xid_source(
     probe: dict[str, Any] | None = None
     available = query_readable and bool(lines)
     if query_readable and not lines:
-        probe_result = run_command(readability_command, timeout_s=15, environment=environment)
+        probe_result = run_command(probe_command, timeout_s=15, environment=environment)
         probe_stdout = probe_result["stdout"]
         probe_stderr = probe_result["stderr"]
         probe_combined = f"{probe_stdout}\n{probe_stderr}".casefold()
@@ -1443,6 +1446,8 @@ def _local_xid_source(
         available = probe_available
         probe = {
             "available": probe_available,
+            "command": probe_command,
+            "used_sudo": used_sudo,
             "returncode": probe_result["returncode"],
             "record_count": len(probe_lines),
             "stderr": probe_stderr.strip()[-2000:],
@@ -1466,6 +1471,12 @@ def _local_xid_source(
             reason = "source reported unavailable journal or insufficient permission"
     return {
         "name": name,
+        "command_source": name,
+        "query_command": query_command,
+        "used_sudo": used_sudo,
+        "privilege_mode": "sudo-non-interactive" if used_sudo else "unprivileged",
+        "fallback_attempted": used_sudo,
+        "unprivileged_attempt": None,
         "available": available,
         "returncode": command_result["returncode"],
         "record_count": len(lines),
@@ -1496,10 +1507,10 @@ def collect_xid_events(
     end_text = window_end.strftime(timestamp_format)
     command_environment = os.environ.copy()
     command_environment.update({"LC_ALL": "C", "LANG": "C", "TZ": "UTC"})
-    local_sources = [
-        _local_xid_source(
-            "journalctl",
-            [
+    source_specs = [
+        {
+            "name": "journalctl",
+            "command": [
                 "journalctl",
                 "-k",
                 "--since",
@@ -1510,7 +1521,7 @@ def collect_xid_events(
                 "-o",
                 "short-iso-precise",
             ],
-            readability_command=[
+            "readability_command": [
                 "journalctl",
                 "-k",
                 "-n",
@@ -1519,14 +1530,11 @@ def collect_xid_events(
                 "-o",
                 "short-iso-precise",
             ],
-            readability_requires_records=True,
-            window_start=window_start,
-            window_end=window_end,
-            environment=command_environment,
-        ),
-        _local_xid_source(
-            "dmesg",
-            [
+            "readability_requires_records": True,
+        },
+        {
+            "name": "dmesg",
+            "command": [
                 "dmesg",
                 "--color=never",
                 "--since",
@@ -1534,7 +1542,7 @@ def collect_xid_events(
                 "--until",
                 end_text,
             ],
-            readability_command=[
+            "readability_command": [
                 "dmesg",
                 "--color=never",
                 "--since",
@@ -1542,12 +1550,37 @@ def collect_xid_events(
                 "--until",
                 window_start.strftime(timestamp_format),
             ],
-            readability_requires_records=False,
+            "readability_requires_records": False,
+        },
+    ]
+    local_sources = [
+        _local_xid_source(
+            str(spec["name"]),
+            spec["command"],
+            readability_command=spec["readability_command"],
+            readability_requires_records=bool(spec["readability_requires_records"]),
             window_start=window_start,
             window_end=window_end,
             environment=command_environment,
-        ),
+        )
+        for spec in source_specs
     ]
+    if not any(source["available"] for source in local_sources):
+        for index, spec in enumerate(source_specs):
+            unprivileged_attempt = local_sources[index]
+            sudo_prefix = ["sudo", "-n", "--"]
+            sudo_source = _local_xid_source(
+                str(spec["name"]),
+                [*sudo_prefix, *spec["command"]],
+                readability_command=[*sudo_prefix, *spec["readability_command"]],
+                readability_requires_records=bool(spec["readability_requires_records"]),
+                window_start=window_start,
+                window_end=window_end,
+                environment=command_environment,
+                used_sudo=True,
+            )
+            sudo_source["unprivileged_attempt"] = unprivileged_attempt
+            local_sources[index] = sudo_source
     provider = _provider_health_evidence(
         evidence_path=provider_evidence_path,
         checksum_path=provider_checksum_path,

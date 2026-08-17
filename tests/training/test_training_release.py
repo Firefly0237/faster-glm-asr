@@ -622,6 +622,21 @@ class DecoderTrainingReleaseTest(unittest.TestCase):
             ):
                 _validate_evidence_pair(None, short)
 
+    def test_training_preflight_rejects_swapped_uuid_pci_pairs(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = materialize_passing_training_preflight(Path(directory) / "preflight.json")
+            document = json.loads(path.read_text(encoding="utf-8"))
+            first = document["rank_inventory"][0]
+            second = document["rank_inventory"][1]
+            first["pci_bus_id"], second["pci_bus_id"] = (
+                second["pci_bus_id"],
+                first["pci_bus_id"],
+            )
+            path.write_text(json.dumps(document), encoding="utf-8")
+
+            with self.assertRaisesRegex(ValueError, "does not match rank identities"):
+                _validate_training_preflight(path)
+
     @unittest.skipIf(torch is None, "PyTorch is not installed")
     def test_planned_stop_resume_matches_uninterrupted_trajectory(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

@@ -171,6 +171,17 @@ records the P2P matrix, `nvidia-smi topo -m`, rank environments, and collective
 timings. It supplements rather than replaces the full readiness report. A
 warning, partial inventory, or short-only result is not a training gate pass.
 
+GPU identity is fail-closed and does not depend on optional PCI attributes on
+`torch.cuda.get_device_properties`. Rank 0 captures the physical
+`nvidia-smi --query-gpu=index,uuid,pci.bus_id,...` inventory once and broadcasts
+it to all ranks. Each rank enumerates the UUIDs of its CUDA-visible logical
+devices, verifies that `LOCAL_RANK` selects the corresponding logical device,
+and joins that UUID to the same `nvidia-smi` row to obtain the PCI BDF. All four
+ranks must observe the same logical UUID order and form four unique UUID/BDF
+pairs. Consequently, a reordered `CUDA_VISIBLE_DEVICES` list is supported, but
+the physical `nvidia-smi` index is never assumed to equal `LOCAL_RANK`; missing,
+ambiguous, or inconsistent UUID mappings abort before the NCCL timing probe.
+
 ## Canonical strong-scaling run
 
 Freeze a fresh source lock after the checkout and environment candidate are

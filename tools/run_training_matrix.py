@@ -200,6 +200,7 @@ def _validate_training_preflight(path: Path) -> dict[str, Any]:
         raise ValueError(f"{path}: training preflight GPU UUIDs are missing or duplicated")
     if any(value is None for value in rank_pci_ids) or len(set(rank_pci_ids)) != 4:
         raise ValueError(f"{path}: training preflight PCI bus IDs are missing or duplicated")
+    rank_identity_pairs = set(zip(rank_uuids, rank_pci_ids, strict=True))
     for item in ranks:
         if (
             "rtx 3090" not in str(item["name"]).lower()
@@ -330,11 +331,11 @@ def _validate_training_preflight(path: Path) -> dict[str, Any]:
             )
         except ValueError as exc:
             raise ValueError(f"{path}: nvidia-smi inventory values are invalid") from exc
+    inventory_identity_pairs = {(item["uuid"], item["pci_bus_id"]) for item in inventory_rows}
     if (
         len(inventory_rows) != 4
         or sorted(item["index"] for item in inventory_rows) != list(range(4))
-        or {item["uuid"] for item in inventory_rows} != set(rank_uuids)
-        or {item["pci_bus_id"] for item in inventory_rows} != set(rank_pci_ids)
+        or inventory_identity_pairs != rank_identity_pairs
         or any(
             item["uuid"] is None
             or item["pci_bus_id"] is None
