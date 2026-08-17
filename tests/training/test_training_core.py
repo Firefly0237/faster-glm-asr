@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import copy
+import json
 import math
 import random
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 try:
     import torch
@@ -29,6 +31,7 @@ if torch is not None:
     from experiments.distributed_training.train import (
         TrainingConfig,
         _data_fingerprint,
+        _json_safe_cuda_uuid,
         _load_checkpoint,
         _lr_for_step,
         _optimizer,
@@ -40,6 +43,32 @@ if torch is not None:
 
 @unittest.skipIf(torch is None, "PyTorch is not installed")
 class DecoderTrainingCoreTest(unittest.TestCase):
+    def test_cuda_uuid_observation_is_json_safe_and_type_strict(self) -> None:
+        class FakeCUuuid:
+            def __init__(self, value: str) -> None:
+                self.value = value
+
+            def __str__(self) -> str:
+                return self.value
+
+        class FakeCUuuidSubclass(FakeCUuuid):
+            pass
+
+        class ArbitraryStrable:
+            def __str__(self) -> str:
+                return "must-not-be-accepted"
+
+        observed = "12345678-1234-1234-1234-123456789abc"
+        with mock.patch.object(torch._C, "_CUuuid", FakeCUuuid, create=True):
+            converted = _json_safe_cuda_uuid(FakeCUuuid(observed))
+            self.assertEqual(json.loads(json.dumps({"gpu_uuid": converted}))["gpu_uuid"], observed)
+            with self.assertRaisesRegex(TypeError, "unsupported CUDA UUID observation type"):
+                _json_safe_cuda_uuid(FakeCUuuidSubclass(observed))
+            with self.assertRaisesRegex(TypeError, "unsupported CUDA UUID observation type"):
+                _json_safe_cuda_uuid(ArbitraryStrable())
+        self.assertEqual(_json_safe_cuda_uuid(observed), observed)
+        self.assertIsNone(_json_safe_cuda_uuid(None))
+
     def test_configs_reject_nonfinite_values(self) -> None:
         for field, value in (
             ("learning_rate", float("nan")),

@@ -731,6 +731,18 @@ def _append_jsonl_distributed(
         raise RuntimeError(f"rank-0 metrics write failed: {status[0]}")
 
 
+def _json_safe_cuda_uuid(value: Any) -> str | None:
+    if value is None or isinstance(value, str):
+        return value
+    cuuuid_type = getattr(torch._C, "_CUuuid", None)
+    if isinstance(cuuuid_type, type) and type(value) is cuuuid_type:
+        return str(value)
+    value_type = type(value)
+    raise TypeError(
+        f"unsupported CUDA UUID observation type: {value_type.__module__}.{value_type.__qualname__}"
+    )
+
+
 def _runtime_environment(
     device: torch.device, rank: int = 0, local_rank: int = 0
 ) -> dict[str, Any]:
@@ -775,7 +787,7 @@ def _runtime_environment(
         result.update(
             {
                 "gpu_name": properties.name,
-                "gpu_uuid": getattr(properties, "uuid", None),
+                "gpu_uuid": _json_safe_cuda_uuid(getattr(properties, "uuid", None)),
                 "pci_bus_id": getattr(properties, "pci_bus_id", None),
                 "compute_capability": [properties.major, properties.minor],
                 "total_memory_bytes": properties.total_memory,
