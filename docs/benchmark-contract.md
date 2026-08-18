@@ -63,6 +63,18 @@ generation parameters, prepared input tensor shapes/dtypes/content hashes, token
 IDs, and decoded hypotheses. Failed or divergent samples remain visible and
 block comparison; they are never silently discarded.
 
+The public summary admits five ordered comparisons: `hf_no_cache` to
+`hf_cached`; `custom_full_prefix` to `custom_greedy_full_prefix`;
+`custom_greedy_full_prefix` to `custom_tuple_cache`; `custom_tuple_cache` to
+`custom_static_cache`; and `custom_full_prefix` to `custom_static_cache`. It
+does not publish a direct Hugging Face-to-custom speedup because those runtime
+families do not produce byte-identical prepared-request tensor contracts. Exact
+generated-token parity remains a matrix-wide correctness gate across all six
+mechanisms; it does not establish prepared-input comparability for an otherwise
+inadmissible latency ratio. The exporter therefore enforces sample identity and
+token output globally, while enforcing prepared-request equality separately
+inside the Hugging Face and custom families.
+
 Custom execution is recorded as `custom-torch-triton-hybrid`. The dispatch
 contract is policy evidence, not a claim that every operation used Triton:
 
@@ -101,6 +113,72 @@ successful tasks, a valid append-only journal, and unchanged output/log hashes;
 it emits exactly 18 profile artifacts. A public benchmark artifact is produced by
 the runner sanitizer during a fresh clean formal run and must pass the strict
 public schema. Manual JSON field deletion is not a release mechanism.
+
+The matrix-level public summary has a stricter, sample-free publication path:
+
+```bash
+faster-glm-asr-public-matrix export \
+  --evidence-root /worktrees/faster-glm-asr-evidence \
+  --publication-root . \
+  --plan artifacts/private/plans/librispeech-test-clean-3-v1.json \
+  --journal artifacts/private/run-journals/librispeech-test-clean-3-v1/journal.json \
+  --aggregate-dir artifacts/private/aggregated \
+  --output artifacts/private/public-matrix-draft.json
+
+faster-glm-asr-public-matrix check \
+  artifacts/private/public-matrix-draft.json
+
+faster-glm-asr-public-matrix publish \
+  --evidence-root /worktrees/faster-glm-asr-evidence \
+  --publication-root . \
+  --plan artifacts/private/plans/librispeech-test-clean-3-v1.json \
+  --journal artifacts/private/run-journals/librispeech-test-clean-3-v1/journal.json \
+  --aggregate-dir artifacts/private/aggregated \
+  --output benchmarks/results/rtx3090-librispeech-test-clean-3-v1.json
+```
+
+Both `export` and `publish` rebuild the summary from the private evidence and
+refuse overwrite; `publish` additionally restricts the destination to a direct
+child of `benchmarks/results/`. The exporter validates the exact 18-file mapping
+against a fresh aggregate rebuild; revalidates the plan-bound three-row
+LibriSpeech manifest, its selection lock, and the canonical data
+configuration; binds every aggregate anchor row back to that manifest; checks
+all generated-token sequences across all profiles; and runs the strict
+canonical comparator for five fixed baseline-to-candidate pairs. It also checks
+that the executing planner, executor, comparator, aggregator, runner,
+provenance, and LibriSpeech-builder bytes equal their evidence-checkout
+counterparts. Speedups are baseline latency divided by candidate latency, so a
+value below one remains below one. The three-item performance summary
+deliberately contains no WER or CER.
+
+The selection lock's `builder_source_sha256` records the builder claimed by the
+original subset-generation event. It is retained as a well-formed historical
+audit handle, not treated as proof that unavailable historical source bytes
+equal the builder used for the formal matrix. Data validation does not rely on
+that claim: the executing LibriSpeech builder must byte-match the evidence
+checkout and the plan's complete source map, then freshly reconstruct the
+manifest rows, selected IDs, candidate counts and inventory, and license binding
+from the pinned official archive and its exact extracted tree. Every other
+selection-lock field is compared with those reconstructed, plan/config-bound
+values. Without the historical source bytes or a separately trusted
+attestation, substituting one syntactically valid builder audit handle for
+another cannot be detected and does not change the reconstructed data semantics.
+
+`export` and `publish` recompute the public evidence hashes from the admitted
+plan, journal, canonical aggregate set, pinned dataset archive, source map, and
+executing exporter/schema bytes. Those hashes are audit handles, not
+self-authenticating proof. The sample-free `check` command and source-release
+guard have no private evidence from which to reproduce that chain; they enforce
+the exact public schema, metric consistency, and privacy boundary, but do not
+prove that an otherwise valid JSON file originated from `publish`.
+
+`--evidence-root` is the immutable evidence checkout, not necessarily the
+checkout from which the installed CLI is launched. `--publication-root` is a
+separate output checkout and is never used to resolve the plan, journal,
+manifest, or aggregates. If the exporter itself was added after a matrix ran,
+point `--evidence-root` at a separate clean worktree of the matrix's recorded
+commit. Adding the exporter to that evidence worktree would change the source
+map and must fail validation.
 
 Synthetic inputs validate control flow, not speech quality. The three-item
 LibriSpeech subset is the performance matrix; the 24-item subset is one separate

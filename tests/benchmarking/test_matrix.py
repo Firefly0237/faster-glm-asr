@@ -311,7 +311,7 @@ class BenchmarkMatrixPlannerTests(unittest.TestCase):
             self.assertEqual(bindings["source_files"], expected_source_records)
             self.assertEqual(bindings["source_map_aggregate_sha256"], expected_source_aggregate)
             self.assertEqual(
-                bindings["python_executable_path"], str(Path(sys.executable).resolve())
+                bindings["python_executable_path"], str(Path(sys.executable).absolute())
             )
             self.assertEqual(len(bindings["task_configuration_sha256"]), 64)
             task_hashes.add(bindings["task_configuration_sha256"])
@@ -367,7 +367,26 @@ class BenchmarkMatrixPlannerTests(unittest.TestCase):
         changed["python_executable"] = planner.CURRENT_PYTHON_PLACEHOLDER
         self._write_configuration(changed)
         task = self._plan()["tasks"][0]
-        self.assertEqual(task["command_argv"][0], str(Path(sys.executable).resolve()))
+        self.assertEqual(task["command_argv"][0], str(Path(sys.executable).absolute()))
+
+    def test_python_executable_preserves_virtual_environment_symlink(self) -> None:
+        venv_python = self.root / "artifacts/private/venvs/test/bin/python"
+        venv_python.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            venv_python.symlink_to(Path(sys.executable))
+        except OSError as exc:
+            self.skipTest(f"file symlinks are unavailable on this platform: {exc}")
+
+        changed = copy.deepcopy(self.configuration)
+        changed["python_executable"] = str(venv_python.absolute())
+        self._write_configuration(changed)
+        plan = self._plan()
+
+        task = plan["tasks"][0]
+        bindings = task["bindings"]
+        self.assertEqual(task["command_argv"][0], str(venv_python.absolute()))
+        self.assertEqual(bindings["python_executable_path"], str(venv_python.absolute()))
+        self.assertEqual(bindings["python_executable_sha256"], _sha256(venv_python))
 
     def test_private_output_root_cannot_leave_private_artifact_root(self) -> None:
         changed = copy.deepcopy(self.configuration)

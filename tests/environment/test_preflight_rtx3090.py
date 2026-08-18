@@ -321,11 +321,14 @@ class PreflightRtx3090Test(unittest.TestCase):
         self.assertEqual(result["matches"], [])
         self.assertEqual(len(calls), 2)
         for command in calls:
+            self.assertNotEqual(command[0], "sudo")
             self.assertIn("--since", command)
             self.assertIn("--until", command)
             self.assertIn("2026-08-16 12:15:00.000000", command)
             self.assertIn("2026-08-16 12:30:00.000000", command)
         self.assertNotEqual(calls[1], ["dmesg", "--color=never"])
+        self.assertFalse(result["local_sources"][0]["used_sudo"])
+        self.assertFalse(result["local_sources"][1]["fallback_attempted"])
 
     def test_accessible_empty_window_is_available_with_zero_xids(self) -> None:
         window_end = datetime.now(UTC)
@@ -356,6 +359,98 @@ class PreflightRtx3090Test(unittest.TestCase):
         self.assertTrue(result["local_sources"][0]["readability_probe"]["available"])
         self.assertEqual(preflight._xid_gate("fixture", result)["status"], "pass")
 
+    def test_noninteractive_sudo_fallback_can_prove_a_clean_window(self) -> None:
+        window_end = datetime(2026, 8, 16, 12, 30, tzinfo=UTC)
+        window_start = window_end - timedelta(minutes=15)
+        calls: list[list[str]] = []
+        denied = {
+            "ok": False,
+            "returncode": 1,
+            "stdout": "",
+            "stderr": "Operation not permitted",
+        }
+        readable = {
+            "ok": True,
+            "returncode": 0,
+            "stdout": "2026-08-16 kernel: ordinary record\n",
+            "stderr": "",
+        }
+
+        def fake_command(
+            command: list[str], timeout_s: float, environment: dict[str, str]
+        ) -> dict[str, object]:
+            calls.append(command)
+            self.assertEqual(timeout_s, 15)
+            self.assertEqual(environment["TZ"], "UTC")
+            return readable if command[:3] == ["sudo", "-n", "--"] else denied
+
+        with mock.patch.object(preflight, "run_command", side_effect=fake_command):
+            result = preflight.collect_xid_events(
+                window_start=window_start,
+                window_end=window_end,
+                policy=self.contract["xid_health_evidence"],
+            )
+
+        self.assertEqual(len(calls), 4)
+        self.assertEqual([command[0] for command in calls[:2]], ["journalctl", "dmesg"])
+        self.assertTrue(result["available"])
+        self.assertEqual(result["matches"], [])
+        self.assertEqual(preflight._xid_gate("fixture", result)["status"], "pass")
+        for source, expected_command in zip(
+            result["local_sources"], ("journalctl", "dmesg"), strict=True
+        ):
+            self.assertTrue(source["used_sudo"])
+            self.assertTrue(source["fallback_attempted"])
+            self.assertEqual(source["privilege_mode"], "sudo-non-interactive")
+            self.assertEqual(source["command_source"], expected_command)
+            self.assertEqual(source["query_command"][:4], ["sudo", "-n", "--", expected_command])
+            self.assertFalse(source["unprivileged_attempt"]["used_sudo"])
+        for command in calls[2:]:
+            self.assertEqual(command[:3], ["sudo", "-n", "--"])
+            self.assertNotIn("-S", command)
+
+    def test_noninteractive_sudo_denial_remains_unavailable(self) -> None:
+        window_end = datetime.now(UTC)
+        window_start = window_end - timedelta(minutes=15)
+        calls: list[list[str]] = []
+        denied = {
+            "ok": False,
+            "returncode": 1,
+            "stdout": "",
+            "stderr": "Operation not permitted",
+        }
+        password_required = {
+            "ok": False,
+            "returncode": 1,
+            "stdout": "",
+            "stderr": "sudo: a password is required",
+        }
+
+        def fake_command(
+            command: list[str], timeout_s: float, environment: dict[str, str]
+        ) -> dict[str, object]:
+            calls.append(command)
+            return password_required if command[0] == "sudo" else denied
+
+        with mock.patch.object(preflight, "run_command", side_effect=fake_command):
+            result = preflight.collect_xid_events(
+                window_start=window_start,
+                window_end=window_end,
+                policy=self.contract["xid_health_evidence"],
+            )
+
+        self.assertFalse(result["available"])
+        self.assertEqual(result["matches"], [])
+        self.assertEqual(preflight._xid_gate("fixture", result)["status"], "warn")
+        self.assertEqual(len(calls), 4)
+        for command in calls[2:]:
+            self.assertEqual(command[:3], ["sudo", "-n", "--"])
+            self.assertNotIn("-S", command)
+        for source in result["local_sources"]:
+            self.assertTrue(source["used_sudo"])
+            self.assertIn("returncode=1", source["reason"])
+            self.assertIn("password is required", source["stderr"])
+
     def test_no_storage_permission_and_unproven_empty_are_unavailable(self) -> None:
         window_end = datetime.now(UTC)
         window_start = window_end - timedelta(minutes=15)
@@ -381,8 +476,17 @@ class PreflightRtx3090Test(unittest.TestCase):
                     "stdout": "",
                     "stderr": "dmesg: read kernel buffer failed: Operation not permitted",
                 }
+                sudo_denied = {
+                    "ok": False,
+                    "returncode": 1,
+                    "stdout": "",
+                    "stderr": "sudo: a password is required",
+                }
+
                 with mock.patch.object(
-                    preflight, "run_command", side_effect=(journal_result, permission)
+                    preflight,
+                    "run_command",
+                    side_effect=(journal_result, permission, sudo_denied, sudo_denied),
                 ):
                     result = preflight.collect_xid_events(
                         window_start=window_start,
@@ -406,7 +510,17 @@ class PreflightRtx3090Test(unittest.TestCase):
             "stdout": "",
             "stderr": "Operation not permitted",
         }
-        with mock.patch.object(preflight, "run_command", side_effect=(empty, unproven, denied)):
+        sudo_denied = {
+            "ok": False,
+            "returncode": 1,
+            "stdout": "",
+            "stderr": "sudo: a password is required",
+        }
+        with mock.patch.object(
+            preflight,
+            "run_command",
+            side_effect=(empty, unproven, denied, sudo_denied, sudo_denied),
+        ):
             result = preflight.collect_xid_events(
                 window_start=window_start,
                 window_end=window_end,
@@ -454,9 +568,7 @@ class PreflightRtx3090Test(unittest.TestCase):
             checksum = root / "provider-health.sha256"
             evidence.write_text(json.dumps(document), encoding="utf-8")
             checksum.write_text(preflight.sha256_file(evidence) + "\n", encoding="ascii")
-            with mock.patch.object(
-                preflight, "run_command", side_effect=(unavailable, unavailable)
-            ):
+            with mock.patch.object(preflight, "run_command", return_value=unavailable):
                 result = preflight.collect_xid_events(
                     window_start=requested_start,
                     window_end=requested_end,
@@ -471,9 +583,7 @@ class PreflightRtx3090Test(unittest.TestCase):
             self.assertEqual(preflight._xid_gate("fixture", result)["status"], "fail")
 
             checksum.write_text("0" * 64 + "\n", encoding="ascii")
-            with mock.patch.object(
-                preflight, "run_command", side_effect=(unavailable, unavailable)
-            ):
+            with mock.patch.object(preflight, "run_command", return_value=unavailable):
                 bad_hash = preflight.collect_xid_events(
                     window_start=requested_start,
                     window_end=requested_end,
@@ -489,9 +599,7 @@ class PreflightRtx3090Test(unittest.TestCase):
             document["unexpected"] = True
             evidence.write_text(json.dumps(document), encoding="utf-8")
             checksum.write_text(preflight.sha256_file(evidence) + "\n", encoding="ascii")
-            with mock.patch.object(
-                preflight, "run_command", side_effect=(unavailable, unavailable)
-            ):
+            with mock.patch.object(preflight, "run_command", return_value=unavailable):
                 bad_schema = preflight.collect_xid_events(
                     window_start=requested_start,
                     window_end=requested_end,
@@ -533,9 +641,7 @@ class PreflightRtx3090Test(unittest.TestCase):
 
             publisher = threading.Thread(target=publish_after)
             publisher.start()
-            with mock.patch.object(
-                preflight, "run_command", side_effect=(unavailable, unavailable)
-            ):
+            with mock.patch.object(preflight, "run_command", return_value=unavailable):
                 result = preflight.collect_xid_events(
                     window_start=requested_start,
                     window_end=requested_end,

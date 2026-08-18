@@ -14,20 +14,38 @@ from tests.helpers.readiness import materialize_passing_readiness
 
 from faster_glm_asr.benchmarking import comparator, provenance
 from faster_glm_asr.benchmarking import matrix_aggregator as aggregation
+from faster_glm_asr.benchmarking import matrix_executor as executor
 from faster_glm_asr.benchmarking import matrix_planner as planner
+from faster_glm_asr.data import librispeech
 
 
 def _materialize_sources(root: Path) -> None:
+    exact_sources = {
+        "src/faster_glm_asr/benchmarking/comparator.py": Path(comparator.__file__).resolve(),
+        "src/faster_glm_asr/benchmarking/matrix_aggregator.py": Path(
+            aggregation.__file__
+        ).resolve(),
+        "src/faster_glm_asr/benchmarking/matrix_executor.py": Path(executor.__file__).resolve(),
+        "src/faster_glm_asr/benchmarking/matrix_planner.py": Path(planner.__file__).resolve(),
+        "src/faster_glm_asr/data/librispeech.py": Path(librispeech.__file__).resolve(),
+    }
     for relative in (
         "src/faster_glm_asr/benchmarking/runner.py",
         "src/faster_glm_asr/benchmarking/comparator.py",
+        "src/faster_glm_asr/benchmarking/matrix_aggregator.py",
+        "src/faster_glm_asr/benchmarking/matrix_executor.py",
+        "src/faster_glm_asr/benchmarking/matrix_planner.py",
         "src/faster_glm_asr/data/audio_manifest.py",
+        "src/faster_glm_asr/data/librispeech.py",
         "src/faster_glm_asr/modeling/model.py",
         "src/faster_glm_asr/kernels/layers.py",
     ):
         path = root / relative
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(f"# fixture source: {relative}\n", encoding="utf-8")
+        if relative in exact_sources:
+            shutil.copyfile(exact_sources[relative], path)
+        else:
+            path.write_text(f"# fixture source: {relative}\n", encoding="utf-8")
 
 
 def _sha256(path: Path) -> str:
@@ -128,6 +146,11 @@ class MatrixFixture:
         mutator: Callable[[dict, dict], None] | None = None,
         successful_tasks: int = 54,
         fail_next: bool = False,
+        dataset_label: str = "domain",
+        model_name: str = "fixture/model",
+        model_revision: str = "a" * 40,
+        manifest_relative: str = "artifacts/private/manifests/domain.jsonl",
+        manifest_setup: Callable[[Path, Path], None] | None = None,
     ) -> None:
         self.temporary = tempfile.TemporaryDirectory()
         self.root = Path(self.temporary.name)
@@ -138,34 +161,34 @@ class MatrixFixture:
         _materialize_sources(self.root)
         self.benchmark_script = self.root / "src/faster_glm_asr/benchmarking/runner.py"
         self.benchmark_script.write_text("# deterministic fixture runner\n", encoding="utf-8")
-        shutil.copyfile(
-            Path(aggregation.__file__).resolve(),
-            self.root / "src/faster_glm_asr/benchmarking/matrix_aggregator.py",
-        )
-        self.manifest = self.root / "artifacts/private/manifests/domain.jsonl"
+        self.manifest = self.root / manifest_relative
+        self.manifest.parent.mkdir(parents=True, exist_ok=True)
         self.lock = self.root / "artifacts/private/environment/freeze.txt"
-        self.manifest.write_text('{"sample_id":"fixture"}\n', encoding="utf-8")
+        if manifest_setup is None:
+            self.manifest.write_text('{"sample_id":"fixture"}\n', encoding="utf-8")
+        else:
+            manifest_setup(self.root, self.manifest)
         self.lock.write_text("torch==2.10.0\n", encoding="utf-8")
         self.repository_state = {"commit": "d" * 40, "dirty": False}
         self.model_binding, self.readiness_binding = _materialize_formal_provenance(
             self.root,
-            repo_id="fixture/model",
-            revision="a" * 40,
+            repo_id=model_name,
+            revision=model_revision,
         )
         self.configuration = {
             "schema_version": planner.CONFIG_SCHEMA,
             "python_executable": sys.executable,
             "benchmark_script": "src/faster_glm_asr/benchmarking/runner.py",
-            "manifest": "artifacts/private/manifests/domain.jsonl",
+            "manifest": manifest_relative,
             "environment_lock": "artifacts/private/environment/freeze.txt",
             "model_snapshot_root": ("artifacts/private/cache/model/glm-asr-nano-2512"),
             "model_snapshot_manifest": "artifacts/private/cache/manifests/model.json",
             "readiness_report": "artifacts/private/rtx3090-readiness/full.json",
             "output_root": "artifacts/private/results/matrix/domain",
-            "dataset_label": "domain",
+            "dataset_label": dataset_label,
             "artifact_scope": "private",
-            "model_name": "fixture/model",
-            "model_revision": "a" * 40,
+            "model_name": model_name,
+            "model_revision": model_revision,
             "implementations": list(planner.IMPLEMENTATIONS),
             "profiles": list(planner.PROFILES),
             "outer_passes": 3,

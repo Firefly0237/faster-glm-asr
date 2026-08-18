@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import copy
+import json
 import math
+import os
 import random
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 try:
     import torch
@@ -27,20 +30,78 @@ if torch is not None:
         RotaryEmbedding,
     )
     from experiments.distributed_training.train import (
+        DETERMINISTIC_CUBLAS_WORKSPACE_CONFIG,
         TrainingConfig,
+        _configure_deterministic_runtime,
         _data_fingerprint,
+        _json_safe_cuda_uuid,
         _load_checkpoint,
         _lr_for_step,
         _optimizer,
         _save_checkpoint,
         _streams,
+        _validate_single_tensor_adamw_state_devices,
         _validate_stream_token_domain,
     )
 
 
 @unittest.skipIf(torch is None, "PyTorch is not installed")
 class DecoderTrainingCoreTest(unittest.TestCase):
+    def test_deterministic_runtime_sets_and_strictly_checks_cublas_workspace(self) -> None:
+        with mock.patch.dict(os.environ, {}, clear=True):
+            self.assertIsNone(_configure_deterministic_runtime(False))
+            self.assertNotIn("CUBLAS_WORKSPACE_CONFIG", os.environ)
+            self.assertEqual(
+                _configure_deterministic_runtime(True),
+                DETERMINISTIC_CUBLAS_WORKSPACE_CONFIG,
+            )
+            self.assertEqual(
+                os.environ["CUBLAS_WORKSPACE_CONFIG"],
+                DETERMINISTIC_CUBLAS_WORKSPACE_CONFIG,
+            )
+            self.assertEqual(
+                _configure_deterministic_runtime(True),
+                DETERMINISTIC_CUBLAS_WORKSPACE_CONFIG,
+            )
+        with (
+            mock.patch.dict(
+                os.environ,
+                {"CUBLAS_WORKSPACE_CONFIG": ":16:8"},
+                clear=True,
+            ),
+            self.assertRaisesRegex(RuntimeError, "deterministic training requires"),
+        ):
+            _configure_deterministic_runtime(True)
+
+    def test_cuda_uuid_observation_is_json_safe_and_type_strict(self) -> None:
+        class FakeCUuuid:
+            def __init__(self, value: str) -> None:
+                self.value = value
+
+            def __str__(self) -> str:
+                return self.value
+
+        class FakeCUuuidSubclass(FakeCUuuid):
+            pass
+
+        class ArbitraryStrable:
+            def __str__(self) -> str:
+                return "must-not-be-accepted"
+
+        observed = "12345678-1234-1234-1234-123456789abc"
+        with mock.patch.object(torch._C, "_CUuuid", FakeCUuuid, create=True):
+            converted = _json_safe_cuda_uuid(FakeCUuuid(observed))
+            self.assertEqual(json.loads(json.dumps({"gpu_uuid": converted}))["gpu_uuid"], observed)
+            with self.assertRaisesRegex(TypeError, "unsupported CUDA UUID observation type"):
+                _json_safe_cuda_uuid(FakeCUuuidSubclass(observed))
+            with self.assertRaisesRegex(TypeError, "unsupported CUDA UUID observation type"):
+                _json_safe_cuda_uuid(ArbitraryStrable())
+        self.assertEqual(_json_safe_cuda_uuid(observed), observed)
+        self.assertIsNone(_json_safe_cuda_uuid(None))
+
     def test_configs_reject_nonfinite_values(self) -> None:
+        with self.assertRaisesRegex(ValueError, "ddp_find_unused_parameters must be a boolean"):
+            TrainingConfig(ddp_find_unused_parameters=1)
         for field, value in (
             ("learning_rate", float("nan")),
             ("adam_eps", float("inf")),
@@ -332,18 +393,22 @@ class DecoderTrainingCoreTest(unittest.TestCase):
             restored_optimizer = _optimizer(restored, TrainingConfig(sequence_length=8))
             replay_train = RandomWindowBatcher(tokens, 2, 8, seed=99)
             replay_validation = RandomWindowBatcher(tokens, 2, 8, seed=100)
-            next_step = _load_checkpoint(
-                checkpoint,
-                restored,
-                restored_optimizer,
-                0,
-                1,
-                torch.device("cpu"),
-                "a" * 64,
-                "b" * 64,
-                replay_train,
-                replay_validation,
-            )
+            with mock.patch(
+                "experiments.distributed_training.train.torch.load", wraps=torch.load
+            ) as checkpoint_load:
+                next_step = _load_checkpoint(
+                    checkpoint,
+                    restored,
+                    restored_optimizer,
+                    0,
+                    1,
+                    torch.device("cpu"),
+                    "a" * 64,
+                    "b" * 64,
+                    replay_train,
+                    replay_validation,
+                )
+            self.assertEqual(checkpoint_load.call_args.kwargs["map_location"], "cpu")
             self.assertEqual(next_step, 1)
             self._assert_optimizer_equal(restored_optimizer.state_dict(), saved_optimizer)
             self.assertEqual(random.random(), expected_python)
@@ -358,6 +423,20 @@ class DecoderTrainingCoreTest(unittest.TestCase):
             for name, value in restored.state_dict().items():
                 torch.testing.assert_close(value, expected_model[name], rtol=0, atol=0)
             self._assert_optimizer_equal(restored_optimizer.state_dict(), expected_optimizer)
+            for parameter, state in restored_optimizer.state.items():
+                self.assertEqual(state["step"].device.type, "cpu")
+                self.assertEqual(state["exp_avg"].device, parameter.device)
+                self.assertEqual(state["exp_avg_sq"].device, parameter.device)
+
+            first_parameter, first_state = next(iter(restored_optimizer.state.items()))
+            original_step = first_state["step"]
+            first_state["step"] = torch.empty((), device="meta")
+            with self.assertRaisesRegex(ValueError, "AdamW step.*must be one CPU tensor"):
+                _validate_single_tensor_adamw_state_devices(restored, restored_optimizer, 2)
+            first_state["step"] = original_step
+            first_state["exp_avg"] = torch.empty_like(first_parameter, device="meta")
+            with self.assertRaisesRegex(ValueError, "AdamW exp_avg.*parameter device"):
+                _validate_single_tensor_adamw_state_devices(restored, restored_optimizer, 2)
 
     @staticmethod
     def _model_config() -> ModelConfig:

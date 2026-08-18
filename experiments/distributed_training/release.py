@@ -212,6 +212,7 @@ def validate_training_config(path: Path) -> dict[str, Any]:
         "compile_model",
         "deterministic_algorithms",
         "allow_tf32",
+        "ddp_find_unused_parameters",
         "expected_world_size",
         "expected_tokens_per_update",
         "expected_parameter_count",
@@ -272,6 +273,7 @@ def validate_training_config(path: Path) -> dict[str, Any]:
         "compile_model",
         "deterministic_algorithms",
         "allow_tf32",
+        "ddp_find_unused_parameters",
         "require_source_lock",
     ):
         if not isinstance(training[key], bool):
@@ -1189,6 +1191,44 @@ def checkpoint_summary(path: Path) -> dict[str, Any]:
     }
 
 
+def _trajectory_number(value: Any, location: str) -> float:
+    if (
+        not isinstance(value, (int, float))
+        or isinstance(value, bool)
+        or not math.isfinite(float(value))
+    ):
+        raise ValueError(f"{location} must be a finite number")
+    return float(value)
+
+
+def _trajectory_rank_diagnostics(
+    record: Mapping[str, Any], step: int
+) -> dict[int, Mapping[str, Any]]:
+    diagnostics = record.get("rank_diagnostics")
+    if not isinstance(diagnostics, list) or not diagnostics:
+        raise ValueError(f"trajectory step {step} has invalid rank_diagnostics")
+    result: dict[int, Mapping[str, Any]] = {}
+    for index, diagnostic in enumerate(diagnostics):
+        if not isinstance(diagnostic, Mapping):
+            raise ValueError(f"trajectory step {step} rank_diagnostics[{index}] is invalid")
+        rank = diagnostic.get("rank")
+        local_rank = diagnostic.get("local_rank")
+        if not isinstance(rank, int) or isinstance(rank, bool) or rank < 0:
+            raise ValueError(f"trajectory step {step} rank_diagnostics[{index}].rank is invalid")
+        if not isinstance(local_rank, int) or isinstance(local_rank, bool) or local_rank < 0:
+            raise ValueError(
+                f"trajectory step {step} rank_diagnostics[{index}].local_rank is invalid"
+            )
+        if rank in result:
+            raise ValueError(f"trajectory step {step} contains duplicate rank diagnostic {rank}")
+        _trajectory_number(diagnostic.get("loss"), f"trajectory step {step} rank {rank} loss")
+        _trajectory_number(
+            diagnostic.get("grad_norm"), f"trajectory step {step} rank {rank} grad_norm"
+        )
+        result[rank] = diagnostic
+    return result
+
+
 def _trajectory_updates(records: Iterable[Mapping[str, Any]]) -> dict[int, Mapping[str, Any]]:
     result: dict[int, Mapping[str, Any]] = {}
     for record in records:
@@ -1199,9 +1239,42 @@ def _trajectory_updates(records: Iterable[Mapping[str, Any]]) -> dict[int, Mappi
             raise ValueError("trajectory contains an invalid train_update step")
         if step in result:
             raise ValueError(f"trajectory contains duplicate train_update step {step}")
-        loss = record.get("loss")
-        if not isinstance(loss, (int, float)) or not math.isfinite(float(loss)):
-            raise ValueError(f"trajectory step {step} has invalid loss")
+        _trajectory_number(record.get("loss"), f"trajectory step {step} loss")
+        _trajectory_number(record.get("grad_norm"), f"trajectory step {step} grad_norm")
+        _trajectory_number(record.get("learning_rate"), f"trajectory step {step} learning_rate")
+        _trajectory_rank_diagnostics(record, step)
+        result[step] = record
+    return result
+
+
+def _trajectory_validations(
+    records: Iterable[Mapping[str, Any]],
+) -> dict[int, Mapping[str, Any]]:
+    result: dict[int, Mapping[str, Any]] = {}
+    for record in records:
+        if record.get("event") != "validation":
+            continue
+        step = record.get("step")
+        if not isinstance(step, int) or isinstance(step, bool) or step <= 0:
+            raise ValueError("trajectory contains an invalid validation step")
+        if step in result:
+            raise ValueError(f"trajectory contains duplicate validation step {step}")
+        _trajectory_number(record.get("loss"), f"trajectory validation step {step} loss")
+        if "log_perplexity" in record:
+            _trajectory_number(
+                record["log_perplexity"],
+                f"trajectory validation step {step} log_perplexity",
+            )
+        if "perplexity" in record and record["perplexity"] is not None:
+            _trajectory_number(
+                record["perplexity"], f"trajectory validation step {step} perplexity"
+            )
+        if "perplexity_status" in record and (
+            not isinstance(record["perplexity_status"], str) or not record["perplexity_status"]
+        ):
+            raise ValueError(
+                f"trajectory validation step {step} perplexity_status must be non-empty"
+            )
         result[step] = record
     return result
 
@@ -1220,6 +1293,8 @@ def compare_trajectories(
     resumed_records = _read_jsonl(resumed_dir / "metrics.jsonl")
     baseline_updates = _trajectory_updates(baseline_records)
     resumed_updates = _trajectory_updates(resumed_records)
+    baseline_validations = _trajectory_validations(baseline_records)
+    resumed_validations = _trajectory_validations(resumed_records)
     baseline_checkpoint = checkpoint_summary(uninterrupted_dir / "checkpoint.pt")
     resumed_checkpoint = checkpoint_summary(resumed_dir / "checkpoint.pt")
     expected_steps = list(range(int(baseline_checkpoint["next_step"])))
@@ -1305,10 +1380,16 @@ def compare_trajectories(
                 for record in resumed_records[second_start_index:]
             ):
                 failures.append("trajectory events cross or omit their segment run ID")
-    loss_mismatches = []
+    loss_mismatches: list[dict[str, Any]] = []
+    grad_norm_mismatches: list[dict[str, Any]] = []
+    learning_rate_mismatches: list[dict[str, Any]] = []
+    rank_diagnostic_mismatches: list[dict[str, Any]] = []
+    expected_ranks = set(range(int(baseline_checkpoint["world_size"])))
     for step in sorted(set(baseline_updates) & set(resumed_updates)):
-        baseline_loss = float(baseline_updates[step]["loss"])
-        resumed_loss = float(resumed_updates[step]["loss"])
+        baseline_update = baseline_updates[step]
+        resumed_update = resumed_updates[step]
+        baseline_loss = float(baseline_update["loss"])
+        resumed_loss = float(resumed_update["loss"])
         if not math.isclose(baseline_loss, resumed_loss, rel_tol=rtol, abs_tol=atol):
             loss_mismatches.append(
                 {
@@ -1317,8 +1398,141 @@ def compare_trajectories(
                     "resumed": resumed_loss,
                 }
             )
+        baseline_grad_norm = float(baseline_update["grad_norm"])
+        resumed_grad_norm = float(resumed_update["grad_norm"])
+        if not math.isclose(baseline_grad_norm, resumed_grad_norm, rel_tol=rtol, abs_tol=atol):
+            grad_norm_mismatches.append(
+                {
+                    "step": step,
+                    "uninterrupted": baseline_grad_norm,
+                    "resumed": resumed_grad_norm,
+                }
+            )
+        baseline_learning_rate = float(baseline_update["learning_rate"])
+        resumed_learning_rate = float(resumed_update["learning_rate"])
+        if not math.isclose(
+            baseline_learning_rate,
+            resumed_learning_rate,
+            rel_tol=rtol,
+            abs_tol=atol,
+        ):
+            learning_rate_mismatches.append(
+                {
+                    "step": step,
+                    "uninterrupted": baseline_learning_rate,
+                    "resumed": resumed_learning_rate,
+                }
+            )
+
+        baseline_ranks = _trajectory_rank_diagnostics(baseline_update, step)
+        resumed_ranks = _trajectory_rank_diagnostics(resumed_update, step)
+        if set(baseline_ranks) != expected_ranks or set(resumed_ranks) != expected_ranks:
+            rank_diagnostic_mismatches.append(
+                {
+                    "step": step,
+                    "field": "rank",
+                    "uninterrupted": sorted(baseline_ranks),
+                    "resumed": sorted(resumed_ranks),
+                    "expected": sorted(expected_ranks),
+                }
+            )
+        for rank in sorted(set(baseline_ranks) & set(resumed_ranks)):
+            baseline_rank = baseline_ranks[rank]
+            resumed_rank = resumed_ranks[rank]
+            if baseline_rank["local_rank"] != resumed_rank["local_rank"]:
+                rank_diagnostic_mismatches.append(
+                    {
+                        "step": step,
+                        "rank": rank,
+                        "field": "local_rank",
+                        "uninterrupted": baseline_rank["local_rank"],
+                        "resumed": resumed_rank["local_rank"],
+                    }
+                )
+            for field in ("loss", "grad_norm"):
+                baseline_value = float(baseline_rank[field])
+                resumed_value = float(resumed_rank[field])
+                if not math.isclose(baseline_value, resumed_value, rel_tol=rtol, abs_tol=atol):
+                    rank_diagnostic_mismatches.append(
+                        {
+                            "step": step,
+                            "rank": rank,
+                            "field": field,
+                            "uninterrupted": baseline_value,
+                            "resumed": resumed_value,
+                        }
+                    )
     if loss_mismatches:
         failures.append(f"{len(loss_mismatches)} step losses differ")
+    if grad_norm_mismatches:
+        failures.append(f"{len(grad_norm_mismatches)} step global gradient norms differ")
+    if learning_rate_mismatches:
+        failures.append(f"{len(learning_rate_mismatches)} step learning rates differ")
+    if rank_diagnostic_mismatches:
+        failures.append(f"{len(rank_diagnostic_mismatches)} rank diagnostics differ")
+
+    validation_mismatches: list[dict[str, Any]] = []
+    baseline_validation_steps = set(baseline_validations)
+    resumed_validation_steps = set(resumed_validations)
+    if baseline_validation_steps != resumed_validation_steps:
+        validation_mismatches.append(
+            {
+                "field": "step",
+                "uninterrupted": sorted(baseline_validation_steps),
+                "resumed": sorted(resumed_validation_steps),
+            }
+        )
+    if final_step not in baseline_validation_steps or final_step not in resumed_validation_steps:
+        validation_mismatches.append(
+            {
+                "field": "final_step",
+                "expected": final_step,
+                "uninterrupted": final_step in baseline_validation_steps,
+                "resumed": final_step in resumed_validation_steps,
+            }
+        )
+    for step in sorted(baseline_validation_steps & resumed_validation_steps):
+        baseline_validation = baseline_validations[step]
+        resumed_validation = resumed_validations[step]
+        for field in ("loss", "log_perplexity", "perplexity", "perplexity_status"):
+            baseline_has_field = field in baseline_validation
+            resumed_has_field = field in resumed_validation
+            if baseline_has_field != resumed_has_field:
+                validation_mismatches.append(
+                    {
+                        "step": step,
+                        "field": field,
+                        "uninterrupted": baseline_validation.get(field, "<missing>"),
+                        "resumed": resumed_validation.get(field, "<missing>"),
+                    }
+                )
+                continue
+            if not baseline_has_field:
+                continue
+            baseline_value = baseline_validation[field]
+            resumed_value = resumed_validation[field]
+            if field in {"loss", "log_perplexity"} or (
+                field == "perplexity" and baseline_value is not None and resumed_value is not None
+            ):
+                matches = math.isclose(
+                    float(baseline_value),
+                    float(resumed_value),
+                    rel_tol=rtol,
+                    abs_tol=atol,
+                )
+            else:
+                matches = baseline_value == resumed_value
+            if not matches:
+                validation_mismatches.append(
+                    {
+                        "step": step,
+                        "field": field,
+                        "uninterrupted": baseline_value,
+                        "resumed": resumed_value,
+                    }
+                )
+    if validation_mismatches:
+        failures.append(f"{len(validation_mismatches)} validation fields differ")
     digest_fields = (
         "next_step",
         "world_size",
@@ -1350,7 +1564,12 @@ def compare_trajectories(
         "rtol": rtol,
         "atol": atol,
         "compared_steps": len(set(baseline_updates) & set(resumed_updates)),
+        "compared_validation_steps": len(set(baseline_validations) & set(resumed_validations)),
         "loss_mismatches": loss_mismatches,
+        "grad_norm_mismatches": grad_norm_mismatches,
+        "learning_rate_mismatches": learning_rate_mismatches,
+        "rank_diagnostic_mismatches": rank_diagnostic_mismatches,
+        "validation_mismatches": validation_mismatches,
         "checkpoint_mismatches": digest_mismatches,
         "failures": failures,
         "uninterrupted_checkpoint": baseline_checkpoint,

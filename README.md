@@ -33,6 +33,8 @@ training experiment for studying DDP systems behavior.
   WER/CER evaluation.
 - Reproducible environment, model, source, and input fingerprints in benchmark
   artifacts.
+- Single-node DDP scaling, sampled byte-corpus validation, and checkpoint/replay
+  diagnostics from four RTX 3090 GPUs.
 
 ## Quick start
 
@@ -125,8 +127,10 @@ for the static cache.
 
 ## Benchmarking
 
-The benchmark matrix runs paired implementations over identical prepared inputs,
-generation settings, model bytes, and software environments. It records:
+For each admitted performance pair, the benchmark comparator requires identical
+prepared-input contracts, generation settings, model bytes, and software
+environments. Matrix-wide token parity also covers paths that are not admitted
+as direct speedup pairs. The benchmark records:
 
 - median and p95 request latency;
 - real-time factor for speech workloads;
@@ -135,11 +139,67 @@ generation settings, model bytes, and software environments. It records:
 - token and decoded-text parity between paired paths;
 - WER/CER after source-level stitching for long audio.
 
-Target-GPU result tables will be added with their reproducibility artifacts after
-the first complete benchmark run. The
-[benchmark contract](docs/benchmark-contract.md) defines comparison rules and
-metric boundaries, while the [reproducibility guide](docs/reproducibility.md)
-covers data preparation, execution, aggregation, and artifact validation.
+### RTX 3090 inference results
+
+Generation latency on the three-item LibriSpeech `test-clean` performance subset:
+
+| Implementation | Short p50 (ms) | Medium p50 (ms) | Near-30s p50 (ms) |
+|---|---:|---:|---:|
+| `hf_cached` | 781.75 | 1,355.36 | 2,572.08 |
+| `hf_no_cache` | 4,872.40 | 10,205.54 | 23,479.90 |
+| `custom_full_prefix` | 1,154.78 | 3,123.37 | 8,204.01 |
+| `custom_greedy_full_prefix` | 1,155.58 | 3,123.95 | 8,207.39 |
+| `custom_tuple_cache` | 998.94 | 1,728.57 | 3,343.49 |
+| `custom_static_cache` | 1,195.62 | 1,816.03 | 3,872.65 |
+
+Method: one 24 GiB RTX 3090, FP32, batch size 1, concurrency 1, at most 128 new
+tokens, and one LibriSpeech utterance in each duration bucket; three passes used
+three warm-ups followed by ten measured requests per pass, giving 30 observations
+per implementation and bucket, with canonical latency CUDA-synchronized around
+generation and excluding preprocessing, output decoding, file I/O, and model
+loading.
+
+All 18 implementation/profile aggregates passed exact generated-token parity.
+For the admitted within-family p50 comparisons, `hf_cached` produced
+6.23×/7.53×/9.13× speedups over `hf_no_cache` across short/medium/near-30s;
+`custom_tuple_cache` produced 1.16×/1.81×/2.45× over
+`custom_greedy_full_prefix`. Static versus tuple cache measured
+0.84×/0.95×/0.86×, so this static-cache prototype was slower in all three
+buckets; relative to custom full-prefix decoding, it measured
+0.97×/1.72×/2.12×. Hugging Face and custom requests use different prepared mask
+dtypes, so no direct cross-family speedup is published.
+
+See the [public result JSON](benchmarks/results/rtx3090-librispeech-test-clean-3-v1.json)
+for the complete summary and the [benchmark contract](docs/benchmark-contract.md)
+for comparison rules and metric boundaries. The
+[reproducibility guide](docs/reproducibility.md) covers data preparation,
+execution, aggregation, and artifact validation.
+
+## Distributed-training experiment
+
+The scaling and byte-corpus runs at revision `1d6e9e3` used one PHB-connected
+node with four 24 GiB RTX 3090 GPUs, Python 3.11.8, PyTorch 2.10.0+cu128, CUDA
+12.8, and NVIDIA driver 595.71.05. The 403,097,088-parameter BF16/FP32 workload
+fixed 32,768 tokens per update; each world size contributed 90 post-warmup
+observations across three interleaved trials.
+
+| GPUs | Median tokens/s | p05–p95 tokens/s | Speedup | Efficiency |
+|---:|---:|---:|---:|---:|
+| 1 | 14,212.555 | 14,156.341–14,358.586 | 1.0000× | 100.000% |
+| 2 | 24,901.857 | 24,853.724–25,025.829 | 1.7521× | 87.605% |
+| 4 | 30,708.305 | 30,434.381–31,002.553 | 2.16065× | 54.016% |
+
+An independent 275,621,120-parameter decoder run on a TinyStories-derived byte
+corpus reached sampled validation loss 1.1350639 at update 200 (byte-level
+perplexity 3.11137); each evaluation sampled 65,536 next-byte targets from the
+disjoint validation file. In the interruption experiment, the fixed-bucket
+diagnostic matched all eight updates exactly, a result consistent with the DDP
+reducer lifecycle affecting the resume boundary but not evidence of a unique
+cause. The default and fixed-bucket replay diagnostics used independently
+source-locked revisions `49864c9` and `71f6893`, respectively.
+
+See [Distributed training](docs/distributed-training.md) for the experimental
+contract, metric definitions, and reproduction workflow.
 
 ## Repository layout
 
@@ -168,14 +228,6 @@ faster-glm-asr/
 | [Distributed training](docs/distributed-training.md) | Single-node DDP scaling, replay, and profiling experiment |
 | [Provenance](docs/provenance.md) | Upstream sources, licenses, and adaptation records |
 | [Documentation index](docs/README.md) | Complete guide index |
-
-## Distributed-training experiment
-
-`experiments/distributed_training/` contains a self-contained decoder experiment
-for measuring single-node DDP scaling at world sizes 1, 2, and 4. It includes a
-fixed global-token workload, BF16 autocast, checkpoint replay, trajectory checks,
-and an isolated profiler run. Its configuration and execution workflow are
-documented in [Distributed training](docs/distributed-training.md).
 
 ## Development
 

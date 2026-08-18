@@ -192,13 +192,18 @@ def _validate_configuration(configuration: Mapping[str, Any]) -> dict[str, Any]:
         validated[key] = _require_string(configuration, key)
     configured_python = validated["python_executable"]
     if configured_python == CURRENT_PYTHON_PLACEHOLDER:
-        configured_python = str(Path(sys.executable).resolve())
+        configured_python = sys.executable
     python_path = Path(configured_python)
     if not python_path.is_absolute():
         raise ValueError(
             f"python_executable must be an absolute path or {CURRENT_PYTHON_PLACEHOLDER!r}"
         )
-    python_path = python_path.resolve()
+    # Preserve a virtual environment's Python entry point.  On POSIX, that
+    # entry point is commonly a symlink to the base interpreter; resolving it
+    # would bypass the venv when the planned command is launched and lose its
+    # installed packages.  ``abspath`` still normalizes ``.``/``..`` without
+    # dereferencing the executable.
+    python_path = Path(os.path.abspath(python_path))
     if not python_path.is_file():
         raise FileNotFoundError(f"python_executable does not exist: {python_path}")
     validated["python_executable"] = str(python_path)

@@ -146,6 +146,16 @@ storage, permission errors, an unreadable kernel buffer, or an empty Journal
 probe that cannot establish readability remains unavailable. With no other
 evidence this is a warning, never a clean result.
 
+The collector tries the bounded `journalctl` and `dmesg` commands without
+privilege first. Only when neither ordinary source proves readable does it retry
+those same bounded commands as `sudo -n -- <command>`. The `-n` flag makes this
+strictly non-interactive: a host that requires a password returns an unavailable
+source instead of prompting or waiting. Each local-source report records the
+exact query command, `command_source`, `used_sudo`, `privilege_mode`, and, after
+a fallback, the original `unprivileged_attempt`; readability probes record their
+exact command and sudo mode as well. A failed sudo retry therefore remains a
+warning and cannot certify a clean Xid window.
+
 For a container where both local sources are unavailable, the CLI accepts two
 separate provider evidence pairs. `before` covers the lookback; `after` covers
 the preflight itself. The after paths may not exist at launch: a trusted

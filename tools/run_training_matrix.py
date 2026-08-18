@@ -200,6 +200,7 @@ def _validate_training_preflight(path: Path) -> dict[str, Any]:
         raise ValueError(f"{path}: training preflight GPU UUIDs are missing or duplicated")
     if any(value is None for value in rank_pci_ids) or len(set(rank_pci_ids)) != 4:
         raise ValueError(f"{path}: training preflight PCI bus IDs are missing or duplicated")
+    rank_identity_pairs = set(zip(rank_uuids, rank_pci_ids, strict=True))
     for item in ranks:
         if (
             "rtx 3090" not in str(item["name"]).lower()
@@ -330,11 +331,11 @@ def _validate_training_preflight(path: Path) -> dict[str, Any]:
             )
         except ValueError as exc:
             raise ValueError(f"{path}: nvidia-smi inventory values are invalid") from exc
+    inventory_identity_pairs = {(item["uuid"], item["pci_bus_id"]) for item in inventory_rows}
     if (
         len(inventory_rows) != 4
         or sorted(item["index"] for item in inventory_rows) != list(range(4))
-        or {item["uuid"] for item in inventory_rows} != set(rank_uuids)
-        or {item["pci_bus_id"] for item in inventory_rows} != set(rank_pci_ids)
+        or inventory_identity_pairs != rank_identity_pairs
         or any(
             item["uuid"] is None
             or item["pci_bus_id"] is None
@@ -560,6 +561,8 @@ def _source_lock_command(args: argparse.Namespace) -> int:
             "cpu-smoke.json",
             "tinystories-275m-w4.json",
             "resume-275m-w4.json",
+            "trajectory-275m-w4.json",
+            "trajectory-275m-w4-fixed-buckets.json",
         )
     ]
     if (args.readiness_report is None) != (args.preflight_report is None):
@@ -875,6 +878,8 @@ def _single_process_training_command(
 def _trajectory_command(args: argparse.Namespace) -> int:
     config_validation = validate_training_config(args.config)
     training = config_validation["document"]["training"]
+    if training["deterministic_algorithms"] is not True:
+        raise ValueError("trajectory config must enable deterministic_algorithms")
     if (
         args.stop_after_step <= 0
         or args.stop_after_step >= training["steps"]
@@ -940,8 +945,9 @@ def _trajectory_command(args: argparse.Namespace) -> int:
                 "report": str(report_path.resolve()),
                 "world_size": world_size,
                 "comparison": (
-                    "per-step loss plus final model, AdamW, process RNG and "
-                    "data-cursor structural digests"
+                    "per-step global and rank loss/gradient diagnostics, learning rate, "
+                    "validation, plus final model, AdamW, process RNG and data-cursor "
+                    "structural digests"
                 ),
                 "required_evidence": evidence if world_size > 1 else None,
                 "commands": commands,
@@ -1151,7 +1157,7 @@ def _parser() -> argparse.ArgumentParser:
     trajectory.add_argument(
         "--config",
         type=Path,
-        default=DEFAULT_CONFIG_DIR / "resume-275m-w4.json",
+        default=DEFAULT_CONFIG_DIR / "trajectory-275m-w4.json",
     )
     trajectory.add_argument("--artifact-root", type=Path, default=DEFAULT_ARTIFACT_ROOT)
     trajectory.add_argument(

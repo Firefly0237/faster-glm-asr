@@ -1,0 +1,605 @@
+{
+  "artifact_scope": "public",
+  "benchmark": {
+    "dataset": {
+      "duration_buckets": [
+        {
+          "maximum_inclusive": false,
+          "maximum_seconds": 10.0,
+          "minimum_seconds": 0.0,
+          "name": "short"
+        },
+        {
+          "maximum_inclusive": false,
+          "maximum_seconds": 20.0,
+          "minimum_seconds": 10.0,
+          "name": "medium"
+        },
+        {
+          "maximum_inclusive": true,
+          "maximum_seconds": 30.0,
+          "minimum_seconds": 20.0,
+          "name": "near-30s"
+        }
+      ],
+      "name": "LibriSpeech",
+      "selection": "one duration-stratified utterance per bucket",
+      "subset": "test-clean",
+      "utterance_count": 3
+    },
+    "model": {
+      "repository": "zai-org/GLM-ASR-Nano-2512",
+      "revision": "61ba4e0b3309b6656edea3e93e419f7bd5c61957"
+    }
+  },
+  "comparisons": [
+    {
+      "baseline": "hf_no_cache",
+      "candidate": "hf_cached",
+      "duration_buckets": [
+        {
+          "generation_p50_speedup": 6.232704332798379,
+          "generation_p95_speedup": 6.054148564641315,
+          "name": "short"
+        },
+        {
+          "generation_p50_speedup": 7.529790010774363,
+          "generation_p95_speedup": 7.319438643637572,
+          "name": "medium"
+        },
+        {
+          "generation_p50_speedup": 9.128758982985502,
+          "generation_p95_speedup": 8.918301382116564,
+          "name": "near-30s"
+        }
+      ],
+      "exact_token_parity": true,
+      "speedup_definition": "baseline latency / candidate latency"
+    },
+    {
+      "baseline": "custom_full_prefix",
+      "candidate": "custom_greedy_full_prefix",
+      "duration_buckets": [
+        {
+          "generation_p50_speedup": 0.9993023660291717,
+          "generation_p95_speedup": 1.0075556958233947,
+          "name": "short"
+        },
+        {
+          "generation_p50_speedup": 0.9998174345325751,
+          "generation_p95_speedup": 1.0026491551972034,
+          "name": "medium"
+        },
+        {
+          "generation_p50_speedup": 0.9995881918644552,
+          "generation_p95_speedup": 0.9991660269379581,
+          "name": "near-30s"
+        }
+      ],
+      "exact_token_parity": true,
+      "speedup_definition": "baseline latency / candidate latency"
+    },
+    {
+      "baseline": "custom_greedy_full_prefix",
+      "candidate": "custom_tuple_cache",
+      "duration_buckets": [
+        {
+          "generation_p50_speedup": 1.1568126210722707,
+          "generation_p95_speedup": 1.268347693503301,
+          "name": "short"
+        },
+        {
+          "generation_p50_speedup": 1.8072430911671251,
+          "generation_p95_speedup": 1.7168146889265494,
+          "name": "medium"
+        },
+        {
+          "generation_p50_speedup": 2.4547347599740643,
+          "generation_p95_speedup": 2.138187516449072,
+          "name": "near-30s"
+        }
+      ],
+      "exact_token_parity": true,
+      "speedup_definition": "baseline latency / candidate latency"
+    },
+    {
+      "baseline": "custom_tuple_cache",
+      "candidate": "custom_static_cache",
+      "duration_buckets": [
+        {
+          "generation_p50_speedup": 0.8354966716946263,
+          "generation_p95_speedup": 0.8700539769183124,
+          "name": "short"
+        },
+        {
+          "generation_p50_speedup": 0.9518382769252158,
+          "generation_p95_speedup": 0.870794148335413,
+          "name": "medium"
+        },
+        {
+          "generation_p50_speedup": 0.8633619446218074,
+          "generation_p95_speedup": 0.9865491630323991,
+          "name": "near-30s"
+        }
+      ],
+      "exact_token_parity": true,
+      "speedup_definition": "baseline latency / candidate latency"
+    },
+    {
+      "baseline": "custom_full_prefix",
+      "candidate": "custom_static_cache",
+      "duration_buckets": [
+        {
+          "generation_p50_speedup": 0.9658388223121198,
+          "generation_p95_speedup": 1.1118688990742454,
+          "name": "short"
+        },
+        {
+          "generation_p50_speedup": 1.7198891001893932,
+          "generation_p95_speedup": 1.4989526512099107,
+          "name": "medium"
+        },
+        {
+          "generation_p50_speedup": 2.118451820799737,
+          "generation_p95_speedup": 2.1076678993774456,
+          "name": "near-30s"
+        }
+      ],
+      "exact_token_parity": true,
+      "speedup_definition": "baseline latency / candidate latency"
+    }
+  ],
+  "evidence": {
+    "aggregate_set_sha256": "d360a93b0ff79713c713672b2bcf2b9565bfb9fc03cd8f44b1bccececea7fdb3",
+    "dataset_archive_sha256": "39fde525e59672dc6d1551919b1478f724438a95aa55f874b576be21967e6c23",
+    "exporter_source_sha256": "00f59fdcea86a39aa3a3320ce48603816323a9bf09ed1706e27b475d6c9a12c8",
+    "git_commit": "1c74ec91175e163b277a12741f3cc5e193ba098e",
+    "journal_sha256": "45ca3846d7b7f725455bd90b703de5538189388c1ef49f39dd75fd07499d261f",
+    "plan_sha256": "76408ca9c59ee472533d4c304163fd6452cf929814d01bb82db3bfe28f464c89",
+    "schema_source_sha256": "51bac806f121ab2ffa458243e4d5e3a0b452e9e2b06a284e066461eb375aee60",
+    "source_map_sha256": "68fc621831ec5a3bfca7c85315774c36304842e2549d96d5d370df52ef9d7f40"
+  },
+  "hardware": {
+    "accelerator_model": "NVIDIA GeForce RTX 3090",
+    "compute_capability": "8.6",
+    "nominal_memory_gib": 24
+  },
+  "parity": {
+    "criterion": "exact generated-token sequence equality",
+    "duration_buckets_checked": 3,
+    "implementations_checked": 6,
+    "profile_scope": "all 18 implementation/profile aggregates",
+    "status": "pass"
+  },
+  "protocol": {
+    "canonical_latency": {
+      "instrumentation": "NVML polling disabled; diagnostic phase timing disabled",
+      "rtf_definition": "generation wall-clock seconds / input audio seconds",
+      "statistics_scope": "one duration bucket across all outer-pass observations",
+      "synchronization_boundary": "CUDA synchronize immediately before and after autoregressive generation"
+    },
+    "diagnostic_phase": {
+      "canonical_latency_eligible": false,
+      "public_metrics_included": false
+    },
+    "implementations": [
+      "hf_cached",
+      "hf_no_cache",
+      "custom_full_prefix",
+      "custom_greedy_full_prefix",
+      "custom_tuple_cache",
+      "custom_static_cache"
+    ],
+    "max_new_tokens": 128,
+    "measured_repeats_per_bucket": 30,
+    "measured_repeats_per_pass": 10,
+    "measurement_profiles": [
+      "canonical_latency",
+      "request_memory",
+      "diagnostic_phase"
+    ],
+    "outer_passes": 3,
+    "request_memory": {
+      "allocator_peak_delta_semantics": "generation allocated peak minus after-prepare allocated baseline, floored at zero",
+      "canonical_latency_eligible": false,
+      "instrumentation": "NVML process polling plus PyTorch CUDA allocator counters",
+      "poll_interval_ms": 10.0,
+      "process_peak_semantics": "polling-observed lower bound"
+    },
+    "storage_activation_dtype": "torch.float32",
+    "warmup_iterations_per_task": 3
+  },
+  "results": [
+    {
+      "duration_buckets": [
+        {
+          "canonical": {
+            "generation_p50_ms": 781.7476894997526,
+            "generation_p95_ms": 817.7810713494182,
+            "observations": 30,
+            "rtf_p50": 0.10409423295602566,
+            "rtf_p95": 0.10889228646463625
+          },
+          "name": "short",
+          "request_memory": {
+            "allocator_peak_delta_p50_mib": 90.51806640625,
+            "allocator_peak_delta_p95_mib": 90.51806640625,
+            "minimum_poll_samples_per_request": 75,
+            "observations": 30,
+            "process_peak_observed_is_lower_bound": true,
+            "process_peak_observed_p50_mib": 8744.0,
+            "process_peak_observed_p95_mib": 8744.0
+          }
+        },
+        {
+          "canonical": {
+            "generation_p50_ms": 1355.3550650012767,
+            "generation_p95_ms": 1397.2131767015526,
+            "observations": 30,
+            "rtf_p50": 0.09757775845941516,
+            "rtf_p95": 0.10059130141839831
+          },
+          "name": "medium",
+          "request_memory": {
+            "allocator_peak_delta_p50_mib": 91.13623046875,
+            "allocator_peak_delta_p95_mib": 91.13623046875,
+            "minimum_poll_samples_per_request": 127,
+            "observations": 30,
+            "process_peak_observed_is_lower_bound": true,
+            "process_peak_observed_p50_mib": 8756.0,
+            "process_peak_observed_p95_mib": 8756.0
+          }
+        },
+        {
+          "canonical": {
+            "generation_p50_ms": 2572.080244999597,
+            "generation_p95_ms": 2640.6420560000697,
+            "observations": 30,
+            "rtf_p50": 0.0983963368400764,
+            "rtf_p95": 0.10101920642693457
+          },
+          "name": "near-30s",
+          "request_memory": {
+            "allocator_peak_delta_p50_mib": 92.33447265625,
+            "allocator_peak_delta_p95_mib": 92.33447265625,
+            "minimum_poll_samples_per_request": 235,
+            "observations": 30,
+            "process_peak_observed_is_lower_bound": true,
+            "process_peak_observed_p50_mib": 8784.0,
+            "process_peak_observed_p95_mib": 8784.0
+          }
+        }
+      ],
+      "implementation": "hf_cached"
+    },
+    {
+      "duration_buckets": [
+        {
+          "canonical": {
+            "generation_p50_ms": 4872.40221150023,
+            "generation_p95_ms": 4950.968099300917,
+            "observations": 30,
+            "rtf_p50": 0.6487885767643449,
+            "rtf_p95": 0.6592500798003884
+          },
+          "name": "short",
+          "request_memory": {
+            "allocator_peak_delta_p50_mib": 91.1484375,
+            "allocator_peak_delta_p95_mib": 91.1484375,
+            "minimum_poll_samples_per_request": 453,
+            "observations": 30,
+            "process_peak_observed_is_lower_bound": true,
+            "process_peak_observed_p50_mib": 8734.0,
+            "process_peak_observed_p95_mib": 8734.0
+          }
+        },
+        {
+          "canonical": {
+            "generation_p50_ms": 10205.53902949905,
+            "generation_p95_ms": 10226.816118948955,
+            "observations": 30,
+            "rtf_p50": 0.7347400309214578,
+            "rtf_p95": 0.7362718588156194
+          },
+          "name": "medium",
+          "request_memory": {
+            "allocator_peak_delta_p50_mib": 91.70556640625,
+            "allocator_peak_delta_p95_mib": 91.70556640625,
+            "minimum_poll_samples_per_request": 957,
+            "observations": 30,
+            "process_peak_observed_is_lower_bound": true,
+            "process_peak_observed_p50_mib": 8734.0,
+            "process_peak_observed_p95_mib": 8734.0
+          }
+        },
+        {
+          "canonical": {
+            "generation_p50_ms": 23479.900641499626,
+            "generation_p95_ms": 23550.041697700544,
+            "observations": 30,
+            "rtf_p50": 0.8982364438217147,
+            "rtf_p95": 0.9009197282976489
+          },
+          "name": "near-30s",
+          "request_memory": {
+            "allocator_peak_delta_p50_mib": 93.251953125,
+            "allocator_peak_delta_p95_mib": 93.251953125,
+            "minimum_poll_samples_per_request": 2185,
+            "observations": 30,
+            "process_peak_observed_is_lower_bound": true,
+            "process_peak_observed_p50_mib": 8734.0,
+            "process_peak_observed_p95_mib": 8734.0
+          }
+        }
+      ],
+      "implementation": "hf_no_cache"
+    },
+    {
+      "duration_buckets": [
+        {
+          "canonical": {
+            "generation_p50_ms": 1154.7754559996974,
+            "generation_p95_ms": 1336.9047118509116,
+            "observations": 30,
+            "rtf_p50": 0.15376504074563213,
+            "rtf_p95": 0.17801660610531447
+          },
+          "name": "short",
+          "request_memory": {
+            "allocator_peak_delta_p50_mib": 553.11669921875,
+            "allocator_peak_delta_p95_mib": 553.11669921875,
+            "minimum_poll_samples_per_request": 109,
+            "observations": 30,
+            "process_peak_observed_is_lower_bound": true,
+            "process_peak_observed_p50_mib": 9412.0,
+            "process_peak_observed_p95_mib": 9412.0
+          }
+        },
+        {
+          "canonical": {
+            "generation_p50_ms": 3123.374793000039,
+            "generation_p95_ms": 3144.510824700774,
+            "observations": 30,
+            "rtf_p50": 0.22486499589633108,
+            "rtf_p95": 0.22638666844498012
+          },
+          "name": "medium",
+          "request_memory": {
+            "allocator_peak_delta_p50_mib": 553.11669921875,
+            "allocator_peak_delta_p95_mib": 553.11669921875,
+            "minimum_poll_samples_per_request": 292,
+            "observations": 30,
+            "process_peak_observed_is_lower_bound": true,
+            "process_peak_observed_p50_mib": 9412.0,
+            "process_peak_observed_p95_mib": 9412.0
+          }
+        },
+        {
+          "canonical": {
+            "generation_p50_ms": 8204.012619500645,
+            "generation_p95_ms": 8224.661075601034,
+            "observations": 30,
+            "rtf_p50": 0.31384899079956563,
+            "rtf_p95": 0.3146389087835132
+          },
+          "name": "near-30s",
+          "request_memory": {
+            "allocator_peak_delta_p50_mib": 553.11669921875,
+            "allocator_peak_delta_p95_mib": 553.11669921875,
+            "minimum_poll_samples_per_request": 762,
+            "observations": 30,
+            "process_peak_observed_is_lower_bound": true,
+            "process_peak_observed_p50_mib": 9412.0,
+            "process_peak_observed_p95_mib": 9412.0
+          }
+        }
+      ],
+      "implementation": "custom_full_prefix"
+    },
+    {
+      "duration_buckets": [
+        {
+          "canonical": {
+            "generation_p50_ms": 1155.581629000153,
+            "generation_p95_ms": 1326.8792160996782,
+            "observations": 30,
+            "rtf_p50": 0.15387238735022013,
+            "rtf_p95": 0.17668165327558966
+          },
+          "name": "short",
+          "request_memory": {
+            "allocator_peak_delta_p50_mib": 553.11669921875,
+            "allocator_peak_delta_p95_mib": 553.11669921875,
+            "minimum_poll_samples_per_request": 110,
+            "observations": 30,
+            "process_peak_observed_is_lower_bound": true,
+            "process_peak_observed_p50_mib": 9412.0,
+            "process_peak_observed_p95_mib": 9412.0
+          }
+        },
+        {
+          "canonical": {
+            "generation_p50_ms": 3123.945117500625,
+            "generation_p95_ms": 3136.2025374492077,
+            "observations": 30,
+            "rtf_p50": 0.22490605597556695,
+            "rtf_p95": 0.22578851961477375
+          },
+          "name": "medium",
+          "request_memory": {
+            "allocator_peak_delta_p50_mib": 553.11669921875,
+            "allocator_peak_delta_p95_mib": 553.11669921875,
+            "minimum_poll_samples_per_request": 292,
+            "observations": 30,
+            "process_peak_observed_is_lower_bound": true,
+            "process_peak_observed_p50_mib": 9412.0,
+            "process_peak_observed_p95_mib": 9412.0
+          }
+        },
+        {
+          "canonical": {
+            "generation_p50_ms": 8207.392490499842,
+            "generation_p95_ms": 8231.525946499914,
+            "observations": 30,
+            "rtf_p50": 0.31397828961361296,
+            "rtf_p95": 0.3149015281752071
+          },
+          "name": "near-30s",
+          "request_memory": {
+            "allocator_peak_delta_p50_mib": 553.11669921875,
+            "allocator_peak_delta_p95_mib": 553.11669921875,
+            "minimum_poll_samples_per_request": 766,
+            "observations": 30,
+            "process_peak_observed_is_lower_bound": true,
+            "process_peak_observed_p50_mib": 9412.0,
+            "process_peak_observed_p95_mib": 9412.0
+          }
+        }
+      ],
+      "implementation": "custom_greedy_full_prefix"
+    },
+    {
+      "duration_buckets": [
+        {
+          "canonical": {
+            "generation_p50_ms": 998.9358760012692,
+            "generation_p95_ms": 1046.1478527506188,
+            "observations": 30,
+            "rtf_p50": 0.13301409800283212,
+            "rtf_p95": 0.13930064617185337
+          },
+          "name": "short",
+          "request_memory": {
+            "allocator_peak_delta_p50_mib": 553.11669921875,
+            "allocator_peak_delta_p95_mib": 553.14404296875,
+            "minimum_poll_samples_per_request": 97,
+            "observations": 30,
+            "process_peak_observed_is_lower_bound": true,
+            "process_peak_observed_p50_mib": 9338.0,
+            "process_peak_observed_p95_mib": 9338.0
+          }
+        },
+        {
+          "canonical": {
+            "generation_p50_ms": 1728.5694065003554,
+            "generation_p95_ms": 1826.7565845502759,
+            "observations": 30,
+            "rtf_p50": 0.1244470415047052,
+            "rtf_p95": 0.13151595281139494
+          },
+          "name": "medium",
+          "request_memory": {
+            "allocator_peak_delta_p50_mib": 553.11669921875,
+            "allocator_peak_delta_p95_mib": 553.14404296875,
+            "minimum_poll_samples_per_request": 164,
+            "observations": 30,
+            "process_peak_observed_is_lower_bound": true,
+            "process_peak_observed_p50_mib": 9360.0,
+            "process_peak_observed_p95_mib": 9360.0
+          }
+        },
+        {
+          "canonical": {
+            "generation_p50_ms": 3343.4946309989755,
+            "generation_p95_ms": 3849.7680316505466,
+            "observations": 30,
+            "rtf_p50": 0.1279072161820572,
+            "rtf_p95": 0.14727498208303544
+          },
+          "name": "near-30s",
+          "request_memory": {
+            "allocator_peak_delta_p50_mib": 553.11669921875,
+            "allocator_peak_delta_p95_mib": 553.14404296875,
+            "minimum_poll_samples_per_request": 299,
+            "observations": 30,
+            "process_peak_observed_is_lower_bound": true,
+            "process_peak_observed_p50_mib": 9416.0,
+            "process_peak_observed_p95_mib": 9416.0
+          }
+        }
+      ],
+      "implementation": "custom_tuple_cache"
+    },
+    {
+      "duration_buckets": [
+        {
+          "canonical": {
+            "generation_p50_ms": 1195.6192165016546,
+            "generation_p95_ms": 1202.3941968014697,
+            "observations": 30,
+            "rtf_p50": 0.15920362403484084,
+            "rtf_p95": 0.16010575190432352
+          },
+          "name": "short",
+          "request_memory": {
+            "allocator_peak_delta_p50_mib": 553.11669921875,
+            "allocator_peak_delta_p95_mib": 553.11669921875,
+            "minimum_poll_samples_per_request": 99,
+            "observations": 30,
+            "process_peak_observed_is_lower_bound": true,
+            "process_peak_observed_p50_mib": 9342.0,
+            "process_peak_observed_p95_mib": 9342.0
+          }
+        },
+        {
+          "canonical": {
+            "generation_p50_ms": 1816.032668999469,
+            "generation_p95_ms": 2097.805305699694,
+            "observations": 30,
+            "rtf_p50": 0.13074389265654923,
+            "rtf_p95": 0.15102989961840851
+          },
+          "name": "medium",
+          "request_memory": {
+            "allocator_peak_delta_p50_mib": 553.11669921875,
+            "allocator_peak_delta_p95_mib": 553.11669921875,
+            "minimum_poll_samples_per_request": 168,
+            "observations": 30,
+            "process_peak_observed_is_lower_bound": true,
+            "process_peak_observed_p50_mib": 9344.0,
+            "process_peak_observed_p95_mib": 9344.0
+          }
+        },
+        {
+          "canonical": {
+            "generation_p50_ms": 3872.645362500407,
+            "generation_p95_ms": 3902.256649650735,
+            "observations": 30,
+            "rtf_p50": 0.1481501668898396,
+            "rtf_p95": 0.14928296287875803
+          },
+          "name": "near-30s",
+          "request_memory": {
+            "allocator_peak_delta_p50_mib": 553.11669921875,
+            "allocator_peak_delta_p95_mib": 553.11669921875,
+            "minimum_poll_samples_per_request": 306,
+            "observations": 30,
+            "process_peak_observed_is_lower_bound": true,
+            "process_peak_observed_p50_mib": 9360.0,
+            "process_peak_observed_p95_mib": 9360.0
+          }
+        }
+      ],
+      "implementation": "custom_static_cache"
+    }
+  ],
+  "schema_version": "faster-glm-asr-public-matrix-summary-v0.1",
+  "software": {
+    "cuda_runtime": "12.8",
+    "cudnn_version": 91002,
+    "nvidia_driver_version": "595.71.05",
+    "packages": {
+      "accelerate": "1.12.0",
+      "huggingface-hub": "1.5.0",
+      "numpy": "2.3.5",
+      "nvidia-ml-py": "13.610.43",
+      "safetensors": "0.8.0",
+      "scipy": "1.17.0",
+      "soundfile": "0.13.1",
+      "torch": "2.10.0",
+      "transformers": "5.14.0",
+      "triton": "3.6.0"
+    },
+    "python": "3.11.8"
+  }
+}

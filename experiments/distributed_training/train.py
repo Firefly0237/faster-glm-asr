@@ -26,6 +26,8 @@ from torch.nn.parallel import DistributedDataParallel
 from .data import RandomWindowBatcher, load_byte_stream, synthetic_stream
 from .model import CausalLM, ModelConfig
 
+DETERMINISTIC_CUBLAS_WORKSPACE_CONFIG = ":4096:8"
+
 
 @dataclass(frozen=True)
 class TrainingConfig:
@@ -52,6 +54,7 @@ class TrainingConfig:
     compile_model: bool = False
     deterministic_algorithms: bool = False
     allow_tf32: bool = False
+    ddp_find_unused_parameters: bool = False
     expected_world_size: int | None = None
     expected_tokens_per_update: int | None = None
     expected_parameter_count: int | None = None
@@ -116,6 +119,7 @@ class TrainingConfig:
             "compile_model": self.compile_model,
             "deterministic_algorithms": self.deterministic_algorithms,
             "allow_tf32": self.allow_tf32,
+            "ddp_find_unused_parameters": self.ddp_find_unused_parameters,
             "require_source_lock": self.require_source_lock,
         }.items():
             if not isinstance(value, bool):
@@ -356,6 +360,21 @@ def _optimizer(model: CausalLM, config: TrainingConfig) -> torch.optim.Optimizer
     )
 
 
+def _configure_deterministic_runtime(enabled: bool) -> str | None:
+    observed = os.environ.get("CUBLAS_WORKSPACE_CONFIG")
+    if not enabled:
+        return observed
+    if observed is None:
+        os.environ["CUBLAS_WORKSPACE_CONFIG"] = DETERMINISTIC_CUBLAS_WORKSPACE_CONFIG
+        return DETERMINISTIC_CUBLAS_WORKSPACE_CONFIG
+    if observed != DETERMINISTIC_CUBLAS_WORKSPACE_CONFIG:
+        raise RuntimeError(
+            "deterministic training requires CUBLAS_WORKSPACE_CONFIG="
+            f"{DETERMINISTIC_CUBLAS_WORKSPACE_CONFIG}, observed {observed!r}"
+        )
+    return observed
+
+
 def _optimizer_parameter_names(
     raw_model: CausalLM, optimizer: torch.optim.Optimizer
 ) -> list[list[str]]:
@@ -522,7 +541,7 @@ def _load_checkpoint(
     validation_batcher: RandomWindowBatcher,
     source_lock_sha256: str | None = None,
 ) -> int:
-    checkpoint = torch.load(path, map_location=device, weights_only=False)
+    checkpoint = torch.load(path, map_location="cpu", weights_only=False)
     if not isinstance(checkpoint, dict):
         raise ValueError("checkpoint root must be a mapping")
     if checkpoint.get("schema_version") != "0.4":
@@ -566,15 +585,58 @@ def _load_checkpoint(
         raise ValueError("optimizer parameter names/order do not match the current model")
     raw_model.load_state_dict(checkpoint["model"], strict=True)
     optimizer.load_state_dict(checkpoint["optimizer"])
+    _validate_single_tensor_adamw_state_devices(raw_model, optimizer, next_step)
     random.setstate(state["python_random_state"])
     torch.set_rng_state(state["torch_cpu_rng_state"].cpu())
     if device.type == "cuda" and state["torch_cuda_rng_state"] is not None:
-        # RNG APIs require a CPU ByteTensor even though the remaining
-        # checkpoint tensors were mapped directly to the target device.
+        # CUDA RNG APIs also require the checkpoint's CPU ByteTensor state.
         torch.cuda.set_rng_state(state["torch_cuda_rng_state"].cpu(), device=device)
     train_batcher.load_state_dict(state["train_batcher"])
     validation_batcher.load_state_dict(state["validation_batcher"])
     return next_step
+
+
+def _validate_single_tensor_adamw_state_devices(
+    raw_model: CausalLM,
+    optimizer: torch.optim.Optimizer,
+    next_step: int,
+) -> None:
+    if not isinstance(optimizer, torch.optim.AdamW):
+        raise ValueError("checkpoint resume requires the configured single-tensor AdamW optimizer")
+    for group in optimizer.param_groups:
+        if (
+            group.get("foreach") is not False
+            or group.get("fused") is not False
+            or group.get("capturable") is not False
+        ):
+            raise ValueError("checkpoint resume requires non-foreach, non-fused AdamW on CPU steps")
+
+    parameter_names = {parameter: name for name, parameter in raw_model.named_parameters()}
+    for group in optimizer.param_groups:
+        for parameter in group["params"]:
+            name = parameter_names.get(parameter, "<unknown>")
+            state = optimizer.state.get(parameter)
+            if not isinstance(state, Mapping) or (next_step > 0 and not state):
+                raise ValueError(f"checkpoint AdamW state is missing for parameter {name}")
+            if not state:
+                continue
+            missing = {"step", "exp_avg", "exp_avg_sq"} - set(state)
+            if missing:
+                raise ValueError(
+                    f"checkpoint AdamW state for parameter {name} is missing {sorted(missing)}"
+                )
+            step = state["step"]
+            if not torch.is_tensor(step) or step.numel() != 1 or step.device.type != "cpu":
+                raise ValueError(
+                    f"checkpoint AdamW step for parameter {name} must be one CPU tensor"
+                )
+            for state_name in ("exp_avg", "exp_avg_sq"):
+                value = state[state_name]
+                if not torch.is_tensor(value) or value.device != parameter.device:
+                    raise ValueError(
+                        f"checkpoint AdamW {state_name} for parameter {name} must be on "
+                        f"parameter device {parameter.device}"
+                    )
 
 
 @torch.no_grad()
@@ -731,6 +793,18 @@ def _append_jsonl_distributed(
         raise RuntimeError(f"rank-0 metrics write failed: {status[0]}")
 
 
+def _json_safe_cuda_uuid(value: Any) -> str | None:
+    if value is None or isinstance(value, str):
+        return value
+    cuuuid_type = getattr(torch._C, "_CUuuid", None)
+    if isinstance(cuuuid_type, type) and type(value) is cuuuid_type:
+        return str(value)
+    value_type = type(value)
+    raise TypeError(
+        f"unsupported CUDA UUID observation type: {value_type.__module__}.{value_type.__qualname__}"
+    )
+
+
 def _runtime_environment(
     device: torch.device, rank: int = 0, local_rank: int = 0
 ) -> dict[str, Any]:
@@ -766,6 +840,7 @@ def _runtime_environment(
         "git_dirty": git_dirty,
         "deterministic_algorithms": torch.are_deterministic_algorithms_enabled(),
         "cuda_visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES"),
+        "cublas_workspace_config": os.environ.get("CUBLAS_WORKSPACE_CONFIG"),
         "nccl_environment": {
             key: value for key, value in sorted(os.environ.items()) if key.startswith("NCCL_")
         },
@@ -775,7 +850,7 @@ def _runtime_environment(
         result.update(
             {
                 "gpu_name": properties.name,
-                "gpu_uuid": getattr(properties, "uuid", None),
+                "gpu_uuid": _json_safe_cuda_uuid(getattr(properties, "uuid", None)),
                 "pci_bus_id": getattr(properties, "pci_bus_id", None),
                 "compute_capability": [properties.major, properties.minor],
                 "total_memory_bytes": properties.total_memory,
@@ -880,6 +955,9 @@ def _main(argv: Sequence[str] | None = None) -> int:
     config_bytes = args.config.read_bytes()
     config_sha256 = hashlib.sha256(config_bytes).hexdigest()
     model_config, training, data_config = _load_config(args.config)
+    # cuBLAS reads this process setting when it creates a workspace.  Apply the
+    # deterministic recipe before process-group setup can initialize CUDA.
+    _configure_deterministic_runtime(training.deterministic_algorithms)
     rank, local_rank, world_size, device = _distributed_context(args.device)
     if training.expected_world_size is not None and world_size != training.expected_world_size:
         raise RuntimeError(
@@ -1137,6 +1215,7 @@ def _main(argv: Sequence[str] | None = None) -> int:
             train_model,
             device_ids=[local_rank],
             output_device=local_rank,
+            find_unused_parameters=training.ddp_find_unused_parameters,
         )
     if training.compile_model:
         # PyTorch 2.10's DDP design note places the DDP wrapper before
