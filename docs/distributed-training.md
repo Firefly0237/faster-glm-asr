@@ -241,7 +241,8 @@ The runner executes an uninterrupted eight-update control, a second run stopped
 normally after the step-4 checkpoint, and a same-world-size resume in the same
 output directory. `--stop-after-step` accepts only an interior checkpoint
 boundary and never mutates config bytes. Comparison fails closed on missing or
-duplicate steps, missing planned-stop/run-end events, any per-step loss
+duplicate steps, missing planned-stop/run-end events, any per-step global or
+per-rank loss/gradient diagnostic difference, learning-rate or validation
 difference, or any final model, AdamW, rank process-state, RNG, or
 train/validation cursor digest difference.
 
@@ -254,6 +255,15 @@ records the effective value in `rank_environments`. The strong-scaling and
 isolated-profiler configs remain unchanged. If this strict first-stage recipe
 raises on an unsupported operation or still diverges, TF32 and SDPA backend
 selection are separate follow-up experiments rather than bundled changes.
+
+`trajectory-275m-w4-fixed-buckets.json` is an isolated trajectory diagnostic
+with the same model, data, precision, and update recipe. It sets DDP
+`find_unused_parameters=True` only to suppress the PyTorch 2.10 reducer's bucket
+rebuild and test whether reducer lifecycle explains a resume boundary. The model
+is expected to use every parameter; this setting adds an autograd-graph traversal
+and is not used in the throughput matrix. Select it explicitly with
+`--config configs/training/trajectory-275m-w4-fixed-buckets.json`; its config
+stem gives it a separate artifact directory from the default first-stage run.
 
 The CPU smoke config exercises the same code in CI, but it is not evidence that
 the four-rank path passed.

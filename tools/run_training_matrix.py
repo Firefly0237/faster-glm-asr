@@ -562,6 +562,7 @@ def _source_lock_command(args: argparse.Namespace) -> int:
             "tinystories-275m-w4.json",
             "resume-275m-w4.json",
             "trajectory-275m-w4.json",
+            "trajectory-275m-w4-fixed-buckets.json",
         )
     ]
     if (args.readiness_report is None) != (args.preflight_report is None):
@@ -944,8 +945,9 @@ def _trajectory_command(args: argparse.Namespace) -> int:
                 "report": str(report_path.resolve()),
                 "world_size": world_size,
                 "comparison": (
-                    "per-step loss plus final model, AdamW, process RNG and "
-                    "data-cursor structural digests"
+                    "per-step global and rank loss/gradient diagnostics, learning rate, "
+                    "validation, plus final model, AdamW, process RNG and data-cursor "
+                    "structural digests"
                 ),
                 "required_evidence": evidence if world_size > 1 else None,
                 "commands": commands,

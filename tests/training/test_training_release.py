@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import json
 import shutil
 import subprocess
@@ -235,9 +236,27 @@ class DecoderTrainingReleaseTest(unittest.TestCase):
             self.assertTrue(item["document"]["training"]["allow_tf32"])
 
         trajectory = validate_training_config(CONFIG_DIR / "trajectory-275m-w4.json")
+        fixed_buckets = validate_training_config(
+            CONFIG_DIR / "trajectory-275m-w4-fixed-buckets.json"
+        )
         profiler = validate_training_config(CONFIG_DIR / "resume-275m-w4.json")
         self.assertTrue(trajectory["document"]["training"]["deterministic_algorithms"])
         self.assertTrue(trajectory["document"]["training"]["allow_tf32"])
+        self.assertFalse(trajectory["document"]["training"]["ddp_find_unused_parameters"])
+        self.assertTrue(fixed_buckets["document"]["training"]["ddp_find_unused_parameters"])
+        baseline_training = copy.deepcopy(trajectory["document"]["training"])
+        fixed_training = copy.deepcopy(fixed_buckets["document"]["training"])
+        self.assertEqual(
+            {key for key in baseline_training if baseline_training[key] != fixed_training[key]},
+            {"experiment_name", "ddp_find_unused_parameters"},
+        )
+        fixed_training["experiment_name"] = baseline_training["experiment_name"]
+        fixed_training["ddp_find_unused_parameters"] = baseline_training[
+            "ddp_find_unused_parameters"
+        ]
+        self.assertEqual(fixed_training, baseline_training)
+        self.assertEqual(fixed_buckets["document"]["model"], trajectory["document"]["model"])
+        self.assertEqual(fixed_buckets["document"]["data"], trajectory["document"]["data"])
         self.assertFalse(profiler["document"]["training"]["deterministic_algorithms"])
 
     def test_real_data_config_is_distinct_and_emits_periodic_validation(self) -> None:
@@ -354,6 +373,12 @@ class DecoderTrainingReleaseTest(unittest.TestCase):
                 text=True,
             )
             self.assertEqual(created.returncode, 0, created.stderr)
+            source_lock_paths = {
+                record["path"] for record in json.loads(lock.read_text(encoding="utf-8"))["files"]
+            }
+            self.assertIn(
+                "configs/training/trajectory-275m-w4-fixed-buckets.json", source_lock_paths
+            )
             planned = subprocess.run(
                 [
                     sys.executable,
@@ -536,6 +561,33 @@ class DecoderTrainingReleaseTest(unittest.TestCase):
             )
             self.assertIn("--stop-after-step", trajectory_plan["commands"][1])
             self.assertIn("--resume", trajectory_plan["commands"][2])
+            fixed_trajectory = subprocess.run(
+                [
+                    sys.executable,
+                    str(runner),
+                    "trajectory",
+                    "--config",
+                    str(CONFIG_DIR / "trajectory-275m-w4-fixed-buckets.json"),
+                    "--source-lock",
+                    str(lock),
+                    "--artifact-root",
+                    str(root / "artifacts"),
+                    "--dry-run",
+                ],
+                cwd=REPOSITORY_ROOT,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(fixed_trajectory.returncode, 0, fixed_trajectory.stderr)
+            fixed_plan = json.loads(fixed_trajectory.stdout)
+            self.assertNotEqual(fixed_plan["baseline_dir"], trajectory_plan["baseline_dir"])
+            self.assertTrue(
+                all(
+                    any("trajectory-275m-w4-fixed-buckets.json" in part for part in command)
+                    for command in fixed_plan["commands"]
+                )
+            )
             profile = subprocess.run(
                 [
                     sys.executable,
@@ -692,6 +744,15 @@ class DecoderTrainingReleaseTest(unittest.TestCase):
             report = compare_trajectories(baseline, resumed)
             self.assertTrue(report["pass"], report["failures"])
             self.assertEqual(report["compared_steps"], 4)
+            self.assertEqual(report["compared_validation_steps"], 2)
+            for field in (
+                "loss_mismatches",
+                "grad_norm_mismatches",
+                "learning_rate_mismatches",
+                "rank_diagnostic_mismatches",
+                "validation_mismatches",
+            ):
+                self.assertEqual(report[field], [])
             baseline_records = _read_jsonl(baseline / "metrics.jsonl")
             updates = [record for record in baseline_records if record["event"] == "train_update"]
             self.assertEqual(len(updates), 4)
@@ -707,6 +768,41 @@ class DecoderTrainingReleaseTest(unittest.TestCase):
                 )
                 self.assertGreaterEqual(update["critical_rank_finite_guard_elapsed_s"], 0.0)
             resumed_records = _read_jsonl(resumed / "metrics.jsonl")
+            original_resumed_records = copy.deepcopy(resumed_records)
+            update = next(
+                record for record in resumed_records if record.get("event") == "train_update"
+            )
+            update["grad_norm"] = float(update["grad_norm"]) + 1.0
+            update["learning_rate"] = float(update["learning_rate"]) + 1.0
+            update["rank_diagnostics"][0]["local_rank"] = 1
+            update["rank_diagnostics"][0]["loss"] = (
+                float(update["rank_diagnostics"][0]["loss"]) + 1.0
+            )
+            update["rank_diagnostics"][0]["grad_norm"] = (
+                float(update["rank_diagnostics"][0]["grad_norm"]) + 1.0
+            )
+            validation = next(
+                record for record in resumed_records if record.get("event") == "validation"
+            )
+            validation["loss"] = float(validation["loss"]) + 1.0
+            validation["log_perplexity"] = float(validation["log_perplexity"]) + 1.0
+            validation["perplexity"] = float(validation["perplexity"]) + 1.0
+            validation["perplexity_status"] = "tampered"
+            _write_jsonl(resumed / "metrics.jsonl", resumed_records)
+            diagnostic_tampering = compare_trajectories(baseline, resumed)
+            self.assertFalse(diagnostic_tampering["pass"])
+            self.assertTrue(diagnostic_tampering["grad_norm_mismatches"])
+            self.assertTrue(diagnostic_tampering["learning_rate_mismatches"])
+            self.assertEqual(
+                {item["field"] for item in diagnostic_tampering["rank_diagnostic_mismatches"]},
+                {"local_rank", "loss", "grad_norm"},
+            )
+            self.assertEqual(
+                {item["field"] for item in diagnostic_tampering["validation_mismatches"]},
+                {"loss", "log_perplexity", "perplexity", "perplexity_status"},
+            )
+
+            resumed_records = original_resumed_records
             resumed_starts = [
                 record for record in resumed_records if record["event"] == "run_start"
             ]

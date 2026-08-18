@@ -36,6 +36,7 @@
     "compile_model": false,
     "deterministic_algorithms": false,
     "allow_tf32": true,
+    "ddp_find_unused_parameters": false,
     "expected_world_size": 1,
     "expected_tokens_per_update": 32768,
     "expected_parameter_count": 403097088,

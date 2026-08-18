@@ -40,6 +40,7 @@ if torch is not None:
         _optimizer,
         _save_checkpoint,
         _streams,
+        _validate_single_tensor_adamw_state_devices,
         _validate_stream_token_domain,
     )
 
@@ -99,6 +100,8 @@ class DecoderTrainingCoreTest(unittest.TestCase):
         self.assertIsNone(_json_safe_cuda_uuid(None))
 
     def test_configs_reject_nonfinite_values(self) -> None:
+        with self.assertRaisesRegex(ValueError, "ddp_find_unused_parameters must be a boolean"):
+            TrainingConfig(ddp_find_unused_parameters=1)
         for field, value in (
             ("learning_rate", float("nan")),
             ("adam_eps", float("inf")),
@@ -390,18 +393,22 @@ class DecoderTrainingCoreTest(unittest.TestCase):
             restored_optimizer = _optimizer(restored, TrainingConfig(sequence_length=8))
             replay_train = RandomWindowBatcher(tokens, 2, 8, seed=99)
             replay_validation = RandomWindowBatcher(tokens, 2, 8, seed=100)
-            next_step = _load_checkpoint(
-                checkpoint,
-                restored,
-                restored_optimizer,
-                0,
-                1,
-                torch.device("cpu"),
-                "a" * 64,
-                "b" * 64,
-                replay_train,
-                replay_validation,
-            )
+            with mock.patch(
+                "experiments.distributed_training.train.torch.load", wraps=torch.load
+            ) as checkpoint_load:
+                next_step = _load_checkpoint(
+                    checkpoint,
+                    restored,
+                    restored_optimizer,
+                    0,
+                    1,
+                    torch.device("cpu"),
+                    "a" * 64,
+                    "b" * 64,
+                    replay_train,
+                    replay_validation,
+                )
+            self.assertEqual(checkpoint_load.call_args.kwargs["map_location"], "cpu")
             self.assertEqual(next_step, 1)
             self._assert_optimizer_equal(restored_optimizer.state_dict(), saved_optimizer)
             self.assertEqual(random.random(), expected_python)
@@ -416,6 +423,20 @@ class DecoderTrainingCoreTest(unittest.TestCase):
             for name, value in restored.state_dict().items():
                 torch.testing.assert_close(value, expected_model[name], rtol=0, atol=0)
             self._assert_optimizer_equal(restored_optimizer.state_dict(), expected_optimizer)
+            for parameter, state in restored_optimizer.state.items():
+                self.assertEqual(state["step"].device.type, "cpu")
+                self.assertEqual(state["exp_avg"].device, parameter.device)
+                self.assertEqual(state["exp_avg_sq"].device, parameter.device)
+
+            first_parameter, first_state = next(iter(restored_optimizer.state.items()))
+            original_step = first_state["step"]
+            first_state["step"] = torch.empty((), device="meta")
+            with self.assertRaisesRegex(ValueError, "AdamW step.*must be one CPU tensor"):
+                _validate_single_tensor_adamw_state_devices(restored, restored_optimizer, 2)
+            first_state["step"] = original_step
+            first_state["exp_avg"] = torch.empty_like(first_parameter, device="meta")
+            with self.assertRaisesRegex(ValueError, "AdamW exp_avg.*parameter device"):
+                _validate_single_tensor_adamw_state_devices(restored, restored_optimizer, 2)
 
     @staticmethod
     def _model_config() -> ModelConfig:
