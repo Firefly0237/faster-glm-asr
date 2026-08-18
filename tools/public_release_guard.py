@@ -10,16 +10,29 @@ current tree.  Findings never echo matched content.
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import os
 import re
+import stat
 import subprocess
 import sys
 import unicodedata
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
+from types import ModuleType
 
 MAX_TEXT_BYTES = 2 * 1024 * 1024
+INDEX_OBJECT_BATCH_SIZE = 32
+
+PUBLIC_MATRIX_SCHEMA_PATH = (
+    Path(__file__).resolve().parents[1]
+    / "src"
+    / "faster_glm_asr"
+    / "benchmarking"
+    / "public_matrix_schema.py"
+)
+PUBLIC_MATRIX_SCHEMA_RELATIVE = "src/faster_glm_asr/benchmarking/public_matrix_schema.py"
 
 ALLOWED_TOP_LEVEL_DIRECTORIES = {
     ".github",
@@ -235,6 +248,82 @@ class Finding:
     origin: str = "candidate"
 
 
+@dataclass(frozen=True)
+class GitIndexEntry:
+    path: str
+    object_id: str
+    mode: str
+    stage: int
+
+
+_public_matrix_schema_module: ModuleType | None = None
+
+
+def _validate_public_matrix_schema_interface(module: ModuleType) -> ModuleType:
+    if not callable(getattr(module, "load_public_summary_bytes", None)) or not callable(
+        getattr(module, "validate_public_summary", None)
+    ):
+        raise RuntimeError("public matrix schema interface is incomplete")
+    return module
+
+
+def _load_public_matrix_schema_bytes(payload: bytes, *, origin: str) -> ModuleType:
+    """Load the verified current-candidate schema without rereading the worktree."""
+    try:
+        source = payload.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise RuntimeError("public matrix schema is not UTF-8") from exc
+    module = ModuleType("_faster_glm_asr_public_matrix_schema")
+    module.__file__ = origin
+    exec(compile(source, origin, "exec"), module.__dict__)
+    return _validate_public_matrix_schema_interface(module)
+
+
+def _load_public_matrix_schema() -> ModuleType:
+    """Load the standalone public-result validator without importing the package."""
+    global _public_matrix_schema_module
+    if _public_matrix_schema_module is not None:
+        return _public_matrix_schema_module
+    spec = importlib.util.spec_from_file_location(
+        "_faster_glm_asr_public_matrix_schema",
+        PUBLIC_MATRIX_SCHEMA_PATH,
+    )
+    if spec is None or spec.loader is None:
+        raise RuntimeError("public matrix schema loader is unavailable")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    _public_matrix_schema_module = _validate_public_matrix_schema_interface(module)
+    return module
+
+
+def _is_public_matrix_summary(path_text: str) -> bool:
+    path = PurePosixPath(path_text.replace("\\", "/"))
+    return (
+        len(path.parts) == 3
+        and path.parts[:2] == ("benchmarks", "results")
+        and path.suffix.casefold() == ".json"
+    )
+
+
+def _public_matrix_findings(path_text: str, payload: bytes, *, origin: str) -> list[Finding]:
+    if not _is_public_matrix_summary(path_text):
+        return []
+    message = "public matrix summary failed strict parsing or schema validation"
+    try:
+        schema = _load_public_matrix_schema()
+        parsed = schema.load_public_summary_bytes(payload)
+        if not isinstance(parsed, dict):
+            raise TypeError("public matrix loader returned a non-object")
+        errors = schema.validate_public_summary(parsed)
+        if not isinstance(errors, list) or any(not isinstance(item, str) for item in errors):
+            raise TypeError("public matrix validator returned an invalid result")
+    except Exception:
+        return [Finding("public-matrix-invalid", path_text, message, origin)]
+    if errors:
+        return [Finding("public-matrix-invalid", path_text, message, origin)]
+    return []
+
+
 def _run_git(root: Path, arguments: Sequence[str], *, text: bool = False) -> bytes | str:
     result = subprocess.run(
         ["git", "-C", str(root), *arguments],
@@ -257,6 +346,103 @@ def candidate_paths(root: Path) -> list[str]:
     assert isinstance(output, bytes)
     decoded = [os.fsdecode(item) for item in output.split(b"\0") if item]
     return sorted(set(path.replace("\\", "/") for path in decoded))
+
+
+def index_entries(root: Path) -> list[GitIndexEntry]:
+    """Return every staged Git index entry without reading the worktree."""
+    output = _run_git(root, ["ls-files", "--stage", "-z"])
+    assert isinstance(output, bytes)
+    entries: list[GitIndexEntry] = []
+    for record in output.split(b"\0"):
+        if not record:
+            continue
+        try:
+            metadata, path_bytes = record.split(b"\t", maxsplit=1)
+            mode_bytes, object_id_bytes, stage_bytes = metadata.split(b" ")
+            stage = int(stage_bytes.decode("ascii"))
+            mode = mode_bytes.decode("ascii")
+            object_id = object_id_bytes.decode("ascii")
+        except (UnicodeDecodeError, ValueError) as exc:
+            raise RuntimeError("git ls-files returned an invalid staged entry") from exc
+        entries.append(
+            GitIndexEntry(
+                path=os.fsdecode(path_bytes).replace("\\", "/"),
+                object_id=object_id,
+                mode=mode,
+                stage=stage,
+            )
+        )
+    return entries
+
+
+def _index_objects(
+    root: Path, object_ids: Sequence[str]
+) -> dict[str, tuple[str, int, bytes | None]]:
+    """Read index objects in one bounded streaming ``git cat-file`` session."""
+    ordered = list(dict.fromkeys(object_ids))
+    if not ordered:
+        return {}
+    process = subprocess.Popen(
+        ["git", "-C", str(root), "cat-file", "--batch"],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    assert process.stdin is not None
+    assert process.stdout is not None
+    assert process.stderr is not None
+    try:
+        process.stdin.write("".join(f"{object_id}\n" for object_id in ordered).encode("ascii"))
+        process.stdin.close()
+        objects: dict[str, tuple[str, int, bytes | None]] = {}
+        for requested in ordered:
+            header = process.stdout.readline()
+            if not header:
+                raise RuntimeError("git cat-file ended before every index object was read")
+            fields = header.rstrip(b"\n").split(b" ")
+            if len(fields) == 2 and fields[1] == b"missing":
+                objects[requested] = ("missing", 0, None)
+                continue
+            if len(fields) != 3:
+                raise RuntimeError("git cat-file returned an invalid object header")
+            returned_id, type_bytes, size_bytes = fields
+            try:
+                returned = returned_id.decode("ascii")
+                object_type = type_bytes.decode("ascii")
+                size = int(size_bytes.decode("ascii"))
+            except (UnicodeDecodeError, ValueError) as exc:
+                raise RuntimeError("git cat-file returned invalid object metadata") from exc
+            if returned != requested or size < 0:
+                raise RuntimeError("git cat-file returned an unexpected index object")
+
+            remaining = size
+            payload = bytearray() if size <= MAX_TEXT_BYTES else None
+            while remaining:
+                chunk = process.stdout.read(min(remaining, 64 * 1024))
+                if not chunk:
+                    raise RuntimeError("git cat-file returned a truncated index object")
+                if payload is not None:
+                    payload.extend(chunk)
+                remaining -= len(chunk)
+            if process.stdout.read(1) != b"\n":
+                raise RuntimeError("git cat-file omitted an index object terminator")
+            objects[requested] = (
+                object_type,
+                size,
+                bytes(payload) if payload is not None else None,
+            )
+        stderr = process.stderr.read()
+        returncode = process.wait()
+        if returncode != 0:
+            raise RuntimeError(
+                "git cat-file --batch failed: " + stderr.decode("utf-8", errors="replace").strip()
+            )
+        return objects
+    except Exception:
+        if process.poll() is None:
+            process.kill()
+            process.wait()
+        raise
 
 
 def _root_name_allowed(name: str) -> bool:
@@ -310,6 +496,14 @@ def validate_path(path_text: str) -> list[Finding]:
                 "top-level-not-allowlisted", normalized, "top-level directory is not allowlisted"
             )
         )
+    elif path.parts[0] == "benchmarks" and not _is_public_matrix_summary(normalized):
+        findings.append(
+            Finding(
+                "benchmark-path-not-allowlisted",
+                normalized,
+                "benchmarks only admits direct public summary JSON under benchmarks/results",
+            )
+        )
 
     root_special = len(path.parts) == 1 and _root_name_allowed(path.name)
     github_special = path.parts[0] == ".github" and path.name == "CODEOWNERS"
@@ -336,6 +530,7 @@ def validate_content(path_text: str, payload: bytes, *, origin: str = "candidate
             )
         )
         return findings
+    findings.extend(_public_matrix_findings(path_text, payload, origin=origin))
     if b"\0" in payload:
         findings.append(Finding("binary-content", path_text, "NUL byte detected", origin))
         return findings
@@ -357,7 +552,50 @@ def validate_content(path_text: str, payload: bytes, *, origin: str = "candidate
     return findings
 
 
-def _metadata_findings(root: Path, candidate_set: set[str], *, strict: bool) -> list[Finding]:
+def _metadata_content_findings(
+    path_text: str, payload: bytes, *, origin: str = "candidate"
+) -> list[Finding]:
+    findings: list[Finding] = []
+    text = payload.decode("utf-8", errors="replace")
+    if path_text == "LICENSE":
+        required_phrases = (
+            "Apache License",
+            "Version 2.0, January 2004",
+            "TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION",
+            "END OF TERMS AND CONDITIONS",
+        )
+        if not all(phrase in text for phrase in required_phrases):
+            findings.append(
+                Finding(
+                    "license-invalid",
+                    "LICENSE",
+                    "Apache-2.0 license text is incomplete",
+                    origin,
+                )
+            )
+    elif path_text == "NOTICE":
+        required_phrases = (
+            "edin-mls-26-spring",
+            "CC0 1.0 Universal",
+            "https://github.com/zai-org/GLM-ASR",
+            "Hugging Face Transformers",
+            "model artifacts are not bundled here",
+        )
+        if not all(phrase in text for phrase in required_phrases):
+            findings.append(
+                Finding(
+                    "notice-invalid",
+                    "NOTICE",
+                    "required upstream boundaries are missing",
+                    origin,
+                )
+            )
+    return findings
+
+
+def _metadata_findings(
+    candidate_set: set[str], payloads: dict[str, bytes], *, strict: bool
+) -> list[Finding]:
     findings: list[Finding] = []
     required = {"LICENSE", "NOTICE"}
     if strict:
@@ -379,38 +617,179 @@ def _metadata_findings(root: Path, candidate_set: set[str], *, strict: bool) -> 
             )
         )
 
-    license_path = root / "LICENSE"
-    if license_path.is_file():
-        license_text = license_path.read_text(encoding="utf-8", errors="replace")
-        required_license_phrases = (
-            "Apache License",
-            "Version 2.0, January 2004",
-            "TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION",
-            "END OF TERMS AND CONDITIONS",
+    for path_text in ("LICENSE", "NOTICE"):
+        payload = payloads.get(path_text)
+        if payload is not None:
+            findings.extend(_metadata_content_findings(path_text, payload))
+    return findings
+
+
+def _is_link_or_reparse_point(path: Path) -> bool:
+    if path.is_symlink():
+        return True
+    try:
+        attributes = getattr(path.lstat(), "st_file_attributes", 0)
+    except FileNotFoundError:
+        return False
+    reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+    return bool(reparse_flag and attributes & reparse_flag)
+
+
+def _safe_worktree_path(root: Path, path_text: str) -> tuple[Path | None, list[Finding]]:
+    local_path = root.joinpath(*PurePosixPath(path_text).parts)
+    probe = root
+    for part in PurePosixPath(path_text).parts:
+        probe /= part
+        if _is_link_or_reparse_point(probe):
+            return None, [
+                Finding(
+                    "symbolic-link",
+                    path_text,
+                    "symbolic links, junctions, and reparse points are not allowed",
+                )
+            ]
+    resolved = local_path.resolve()
+    try:
+        resolved.relative_to(root)
+    except ValueError:
+        return None, [
+            Finding("path-escape", path_text, "candidate resolves outside the repository")
+        ]
+    return local_path, []
+
+
+def _schema_origin_drift_finding() -> Finding:
+    return Finding(
+        "schema-origin-drift",
+        PUBLIC_MATRIX_SCHEMA_RELATIVE,
+        (
+            "strict release requires one ordinary stage-0 schema blob whose bytes "
+            "exactly equal the non-reparse worktree schema"
+        ),
+        "index",
+    )
+
+
+def _strict_public_matrix_schema(
+    root: Path, entries: Sequence[GitIndexEntry]
+) -> tuple[ModuleType | None, list[Finding]]:
+    """Bind strict validation to the exact stage-0 schema selected for commit."""
+    matches = [entry for entry in entries if entry.path == PUBLIC_MATRIX_SCHEMA_RELATIVE]
+    stage_zero = [entry for entry in matches if entry.stage == 0]
+    if len(matches) != 1 or len(stage_zero) != 1 or stage_zero[0].mode not in {"100644", "100755"}:
+        return None, [_schema_origin_drift_finding()]
+
+    entry = stage_zero[0]
+    try:
+        object_type, size, payload = _index_objects(root, [entry.object_id])[entry.object_id]
+    except (KeyError, RuntimeError):
+        return None, [_schema_origin_drift_finding()]
+    if object_type != "blob" or size > MAX_TEXT_BYTES or payload is None:
+        return None, [_schema_origin_drift_finding()]
+
+    worktree_path, path_findings = _safe_worktree_path(root, PUBLIC_MATRIX_SCHEMA_RELATIVE)
+    if worktree_path is None or path_findings or not worktree_path.is_file():
+        return None, [_schema_origin_drift_finding()]
+    try:
+        worktree_payload = worktree_path.read_bytes()
+    except OSError:
+        return None, [_schema_origin_drift_finding()]
+    if worktree_payload != payload:
+        return None, [_schema_origin_drift_finding()]
+
+    try:
+        module = _load_public_matrix_schema_bytes(
+            payload,
+            origin=f"index:{PUBLIC_MATRIX_SCHEMA_RELATIVE}@{entry.object_id}",
         )
-        if not all(phrase in license_text for phrase in required_license_phrases):
-            findings.append(
-                Finding("license-invalid", "LICENSE", "Apache-2.0 license text is incomplete")
+    except Exception:
+        return None, [_schema_origin_drift_finding()]
+    return module, []
+
+
+def _index_findings(root: Path, entries: Sequence[GitIndexEntry]) -> list[Finding]:
+    findings: list[Finding] = []
+    for offset in range(0, len(entries), INDEX_OBJECT_BATCH_SIZE):
+        batch = entries[offset : offset + INDEX_OBJECT_BATCH_SIZE]
+        objects = _index_objects(root, [entry.object_id for entry in batch])
+        for entry in batch:
+            origin = f"index:{entry.object_id[:12]}"
+            findings.extend(
+                Finding(item.code, item.path, item.message, origin)
+                for item in validate_path(entry.path)
             )
-    notice_path = root / "NOTICE"
-    if notice_path.is_file():
-        notice_text = notice_path.read_text(encoding="utf-8", errors="replace")
-        required_notice_phrases = (
-            "edin-mls-26-spring",
-            "CC0 1.0 Universal",
-            "https://github.com/zai-org/GLM-ASR",
-            "Hugging Face Transformers",
-            "model artifacts are not bundled here",
-        )
-        if not all(phrase in notice_text for phrase in required_notice_phrases):
-            findings.append(
-                Finding("notice-invalid", "NOTICE", "required upstream boundaries are missing")
-            )
+            if entry.stage != 0:
+                findings.append(
+                    Finding(
+                        "unmerged-index",
+                        entry.path,
+                        "unmerged index stages are not publishable",
+                        origin,
+                    )
+                )
+            if entry.mode == "120000":
+                findings.append(
+                    Finding(
+                        "symbolic-link",
+                        entry.path,
+                        "staged symbolic links are not allowed",
+                        origin,
+                    )
+                )
+            elif entry.mode == "160000":
+                findings.append(
+                    Finding("gitlink", entry.path, "staged Git links are not allowed", origin)
+                )
+            elif entry.mode not in {"100644", "100755"}:
+                findings.append(
+                    Finding(
+                        "unsupported-git-mode",
+                        entry.path,
+                        f"staged Git mode {entry.mode} is not an ordinary file",
+                        origin,
+                    )
+                )
+
+            object_type, size, payload = objects[entry.object_id]
+            if object_type == "missing":
+                findings.append(
+                    Finding(
+                        "missing-index-object",
+                        entry.path,
+                        "staged object is unavailable",
+                        origin,
+                    )
+                )
+                continue
+            if entry.mode != "160000" and object_type != "blob":
+                findings.append(
+                    Finding(
+                        "invalid-index-object",
+                        entry.path,
+                        "staged ordinary path does not reference a blob",
+                        origin,
+                    )
+                )
+                continue
+            if size > MAX_TEXT_BYTES:
+                findings.append(
+                    Finding(
+                        "file-too-large",
+                        entry.path,
+                        f"staged source exceeds {MAX_TEXT_BYTES} bytes",
+                        origin,
+                    )
+                )
+                continue
+            if payload is not None and object_type == "blob":
+                findings.extend(validate_content(entry.path, payload, origin=origin))
+                findings.extend(_metadata_content_findings(entry.path, payload, origin=origin))
     return findings
 
 
 def _candidate_findings(root: Path, paths: Sequence[str], *, strict: bool) -> list[Finding]:
     findings: list[Finding] = []
+    payloads: dict[str, bytes] = {}
     casefolded: dict[str, str] = {}
     for path_text in paths:
         folded = unicodedata.normalize("NFC", path_text).casefold()
@@ -424,9 +803,9 @@ def _candidate_findings(root: Path, paths: Sequence[str], *, strict: bool) -> li
         findings.extend(path_findings)
         if any(item.code == "unsafe-path" for item in path_findings):
             continue
-        local_path = root.joinpath(*PurePosixPath(path_text).parts)
-        if local_path.is_symlink():
-            findings.append(Finding("symbolic-link", path_text, "symbolic links are not allowed"))
+        local_path, link_findings = _safe_worktree_path(root, path_text)
+        findings.extend(link_findings)
+        if local_path is None:
             continue
         if not local_path.is_file():
             findings.append(
@@ -442,8 +821,10 @@ def _candidate_findings(root: Path, paths: Sequence[str], *, strict: bool) -> li
                 )
             )
             continue
-        findings.extend(validate_content(path_text, local_path.read_bytes()))
-    findings.extend(_metadata_findings(root, set(paths), strict=strict))
+        payload = local_path.read_bytes()
+        payloads[path_text] = payload
+        findings.extend(validate_content(path_text, payload))
+    findings.extend(_metadata_findings(set(paths), payloads, strict=strict))
     return findings
 
 
@@ -521,17 +902,51 @@ def _history_findings(root: Path) -> list[Finding]:
     return findings
 
 
+def _history_completeness_findings(root: Path) -> list[Finding]:
+    value = _run_git(root, ["rev-parse", "--is-shallow-repository"])
+    assert isinstance(value, bytes)
+    state = value.decode("ascii", errors="strict").strip()
+    if state == "false":
+        return []
+    if state == "true":
+        return [
+            Finding(
+                "history-incomplete",
+                ".git",
+                "history scanning requires a non-shallow repository",
+                "history",
+            )
+        ]
+    raise RuntimeError("git returned an invalid shallow-repository state")
+
+
 def scan_repository(
     root: Path, *, strict_release: bool = False, include_history: bool = False
 ) -> list[Finding]:
+    global _public_matrix_schema_module
     root = root.resolve()
     if not (root / ".git").exists():
         raise ValueError(f"not a Git repository root: {root}")
-    paths = candidate_paths(root)
-    findings = _candidate_findings(root, paths, strict=strict_release)
-    if include_history:
-        findings.extend(_history_findings(root))
-    return sorted(set(findings))
+    entries = index_entries(root)
+    previous_schema = _public_matrix_schema_module
+    if strict_release:
+        strict_schema, schema_findings = _strict_public_matrix_schema(root, entries)
+        if schema_findings:
+            return sorted(set(schema_findings))
+        assert strict_schema is not None
+        _public_matrix_schema_module = strict_schema
+    try:
+        paths = candidate_paths(root)
+        findings = _candidate_findings(root, paths, strict=strict_release)
+        findings.extend(_index_findings(root, entries))
+        if include_history:
+            completeness = _history_completeness_findings(root)
+            findings.extend(completeness)
+            if not completeness:
+                findings.extend(_history_findings(root))
+        return sorted(set(findings))
+    finally:
+        _public_matrix_schema_module = previous_schema
 
 
 def main(argv: Sequence[str] | None = None) -> int:

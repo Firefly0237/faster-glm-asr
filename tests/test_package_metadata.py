@@ -15,6 +15,7 @@ EXPECTED_CLI_SCRIPTS = {
     "faster-glm-asr-compare": "faster_glm_asr.benchmarking.comparator:main",
     "faster-glm-asr-plan": "faster_glm_asr.benchmarking.matrix_planner:main",
     "faster-glm-asr-prepare-librispeech": "faster_glm_asr.data.librispeech:main",
+    "faster-glm-asr-public-matrix": ("faster_glm_asr.benchmarking.public_matrix:main"),
     "faster-glm-asr-run-matrix": ("faster_glm_asr.benchmarking.matrix_executor:main"),
     "faster-glm-asr-stitch": "faster_glm_asr.data.segment_stitch:main",
     "faster-glm-asr-transcribe": "faster_glm_asr.transcribe:main",

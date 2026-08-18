@@ -1,27 +1,92 @@
 # Single-node decoder distributed-training experiment
 
-This directory is an isolated systems experiment for a small decoder-only
-Transformer. It is not GLM-ASR training, pretraining evidence for a foundation
-model, or a claim about model quality. Synthetic streams are used only for
-throughput controls and exact checkpoint replay. The separate TinyStories-derived
-byte-file run is the only committed path that produces held-out validation loss
-from non-synthetic data.
+This is a standalone decoder-only systems workload; it does not train GLM-ASR.
+Synthetic byte streams provide controlled scaling and checkpoint/replay inputs,
+while an independent TinyStories-derived byte corpus exercises the data,
+training, checkpoint, and sampled-validation path.
 
-## Hardware decision
+## Results
 
-Use the four RTX 3090 instance, not four A4000s, for the frozen experiment. Each
-3090 exposes 24 GiB, while an A4000 normally exposes 16 GiB. This code keeps a
-complete FP32 model, FP32 gradients, and two FP32 AdamW moment buffers on every
-DDP rank. The tensor-only floor is about 6.45 GB for 403,097,088 parameters and
-4.41 GB for 275,621,120 parameters, before activations, SDPA workspaces, CUDA
-context, and allocator reservation. Those are capacity estimates, not measured
-results; only the rented-host JSONL records may be quoted as measurements.
+The scaling, byte-corpus, and profiler measurements were collected at repository
+revision `1d6e9e3` on one node with four 24 GiB RTX 3090 GPUs, Python 3.11.8,
+PyTorch 2.10.0+cu128, CUDA 12.8, and NVIDIA driver 595.71.05. The GPUs shared a
+PHB topology and exposed neither NVLink nor CUDA peer-to-peer access. The replay
+diagnostics below used later source locks at revisions `49864c9` and `71f6893`.
+
+### Strong scaling
+
+All three world sizes used the 403,097,088-parameter configuration with a fixed
+32,768 global tokens per optimizer update. Forward and backward used BF16
+autocast, while parameters, gradients, AdamW state, and DDP reduction remained
+FP32. For each world size, three interleaved trials ran 40 updates apiece; the
+first 10 updates in every trial were warmup, yielding 90 eligible observations.
+
+| World size | Median tokens/s | p05–p95 tokens/s | Speedup vs. 1 GPU | Efficiency |
+|---:|---:|---:|---:|---:|
+| 1 | 14,212.555 | 14,156.341–14,358.586 | 1.0000× | 100.000% |
+| 2 | 24,901.857 | 24,853.724–25,025.829 | 1.7521× | 87.605% |
+| 4 | 30,708.305 | 30,434.381–31,002.553 | 2.16065× | 54.016% |
+
+The two- and four-GPU figures use the one-GPU median as their baseline. The
+efficiency drop at four GPUs is consistent with communication occupying a larger
+part of this fixed-workload step on the observed non-NVLink topology.
+
+### Sampled byte-corpus validation
+
+The separate TinyStories-derived byte-corpus run used four GPUs and the
+275,621,120-parameter configuration for 200 optimizer updates. Sampled
+validation loss was 2.64365 at update 20, 2.37070 at update 40, and 1.1350639 at
+update 200; the last value corresponds to byte-level perplexity 3.11137. Each
+evaluation consumes the next 128 deterministic pseudorandom windows, sampled
+with replacement, representing 65,536 next-byte targets across four ranks from
+a disjoint validation byte file pinned at upstream revision
+`f54c09fd23315a6f9c86f9dc80f725de7d8f9c64`. These points therefore describe
+sampled validation at each checkpoint, not a fixed exhaustive held-out-set
+curve or a tokenizer-level language-model comparison.
+
+### Checkpoint/replay diagnostic
+
+The default DDP trajectory matched across two uninterrupted launches but showed
+low-order gradient differences after checkpoint resume. The fixed-bucket
+diagnostic, configured with `find_unused_parameters=True` and
+`static_graph=False`, matched its uninterrupted control exactly across all
+eight updates, including losses, gradient diagnostics, learning rates,
+validation, final model and AdamW state, RNG state, and data cursors. The paired
+result is consistent with the PyTorch reducer lifecycle affecting the resume
+boundary; it does not isolate reducer bucket rebuilding as the unique cause.
+The model has no unused parameters, and this diagnostic setting is excluded
+from throughput measurements. The default diagnostic used revision `49864c9`;
+the passing fixed-bucket diagnostic used revision `71f6893`. Its
+`decoder-training-trajectory-comparison/1` artifact has SHA-256
+`30a4fe0faf7630f3ffd6fdacd501f835be19c21dadcc7dfe8eb24b50ab6b203f`;
+the corresponding source lock has SHA-256
+`1e6d5d4f0066499db5873651c03c240cfa29a00bb4700eebdcd00d3b16b601f1`.
+
+### Isolated profiler
+
+The separate four-rank profile used the 275,621,120-parameter configuration.
+Across three active steps, rank 0 recorded 93 NCCL FP32 ring LL kernels totaling
+1.182699568 seconds of device duration; `ProfilerStep*` totaled 3.162648197
+seconds of device duration, giving a 37.4% ratio. These are summed device-event
+durations and may overlap with other device or host work, so the ratio is not a
+wall-clock communication fraction and is not part of the throughput aggregate.
+The denominator is the host-side `ProfilerStep*` aggregate row's
+`device_time_total_us`. The NCCL numerator counts the 93 FP32
+gradient-reduction kernels and excludes three uint32 finite-guard kernels.
+
+## Setup
+
+Each DDP rank holds a complete FP32 model, FP32 gradients, and two FP32 AdamW
+moment buffers. The tensor-only capacity floor is about 6.45 GB for 403,097,088
+parameters and 4.41 GB for 275,621,120 parameters, before activations, SDPA
+workspaces, CUDA context, and allocator reservation. These are capacity
+estimates; measured memory comes from the run artifacts.
 
 The implementation is deliberately limited to single-node DDP/NCCL. It does not
 implement or claim FSDP, tensor parallelism, pipeline parallelism, ZeRO, or
 multi-node training.
 
-## What is frozen before rental
+### Model configurations
 
 The primary model is exactly 403,097,088 unique trainable parameters:
 
@@ -38,6 +103,10 @@ heads, 4 KV heads, hidden width 4096, and 260 output logits. This systems run
 uses only byte IDs 0–255; IDs 256–259 are reserved and unused. Both counts are
 checked analytically by the release validator and at model construction time.
 
+## Method
+
+### Strong-scaling matrix
+
 The canonical strong-scaling matrix fixes 32,768 tokens per optimizer update:
 
 | World size | Microbatch/rank | Sequence | Accumulation | Global tokens/update |
@@ -53,7 +122,21 @@ size consecutively. Aggregation fails unless all nine runs end successfully and
 each world size contributes exactly 90 eligible observations. Profiler output is
 stored under a different subtree and can never enter this aggregate.
 
-## Local gates before starting paid time
+Canonical `elapsed_s` and `tokens_per_second` use a composed `core_update`
+interval. The per-step rank barrier and CUDA peak-memory reset occur first;
+timing then starts before `optimizer.zero_grad`. It includes CPU random window
+sampling, host-to-device copies, BF16 forward/backward and DDP gradient
+reduction, local loss-finite checks, learning-rate computation and assignment,
+gradient clipping, the pre-guard CUDA synchronization, and the optimizer step
+with its CUDA synchronization. The cross-rank finite-check all-reduce is timed
+separately and excluded from `core_update`; mean-loss reduction, metrics I/O,
+memory diagnostics, rank-diagnostic `all_gather_object`, evaluation,
+checkpointing, and `profiler.step()` occur afterward. The aggregate uses the
+slowest rank's `core_update` value for each eligible update.
+
+## Reproduce
+
+### Local validation
 
 From the repository root:
 
@@ -66,15 +149,15 @@ python -m ruff check experiments/distributed_training \
   tools/run_training_matrix.py tests/training
 ```
 
-The 13 core tests cover RMSNorm, RoPE, GQA, causal masking, tied weights,
+The training tests cover RMSNorm, RoPE, GQA, causal masking, tied weights,
 cross-entropy, the learning-rate schedule, byte-stream provenance, the direct
-next-token label-shift oracle, batch cursor replay, and exact checkpoint state.
-The release tests cover parameter counts, matrix construction, source locking,
-warmup exclusion, private paths, atomic no-overwrite behavior, and trajectory
-comparison. The GPU acceptance test is skipped unless
+next-token label-shift oracle, batch cursor replay, checkpoint state, parameter
+counts, matrix construction, source locking, warmup exclusion, private paths,
+atomic no-overwrite behavior, and trajectory comparison. The GPU acceptance
+test is skipped unless
 `RUN_4X3090_ACCEPTANCE=1`; a CPU skip is not GPU evidence.
 
-Generate plans before rental:
+Generate and validate plans before GPU execution:
 
 ```bash
 python tools/run_training_matrix.py source-lock
@@ -90,11 +173,11 @@ neighboring ignored `artifacts/private/` subtrees. Source locks must be
 regenerated after any bound code, config, data manifest, environment candidate,
 or readiness report changes.
 
-## First hour on the rented host
+### GPU environment acceptance
 
-Keep the instance hourly until the full readiness gate and the additional
-training NCCL gate both pass. The host phase is diagnostic only: even a host
-`pass` does not authorize training or a day rental.
+Run both the full readiness gate and the training-specific NCCL gate before a
+formal training launch. The host phase is inventory-only and is not sufficient
+training evidence.
 
 1. Run the host inventory gate before installing or changing anything:
 
@@ -105,8 +188,8 @@ training NCCL gate both pass. The host phase is diagnostic only: even a host
      --output artifacts/private/rtx3090-readiness/host.json
    ```
 
-2. Select exactly one CUDA branch from the report. Do not replace the host
-   NVIDIA driver inside the rented container:
+2. Select exactly one CUDA branch from the report. Keep the validated host
+   NVIDIA driver unchanged inside the execution environment:
 
    ```bash
    python -m pip install -r requirements/rtx3090-cu128.in
@@ -148,8 +231,11 @@ training NCCL gate both pass. The host phase is diagnostic only: even a host
    ```
 
    Training remains blocked unless this report is `phase=full` with
-   `status=pass`, `day_rental_eligible=true`, and `training_ready=true`. The
-   runner also verifies the report tool hash, environment-contract hash,
+   `status=pass`, `training_ready=true`, and every formal eligibility gate
+   accepted by the validator. The current readiness schema retains the legacy
+   compatibility field `day_rental_eligible=true`; this is a machine contract,
+   not an execution recommendation. The runner also verifies the report tool
+   hash, environment-contract hash,
    byte-identical pre/post `pip freeze --all`, package pins, both cache
    manifests, at least 300 seconds of stress, BF16/NCCL, thermal health, and Xid
    gates. A host-only, warning, incomplete, or hand-written substitute is
@@ -182,7 +268,7 @@ pairs. Consequently, a reordered `CUDA_VISIBLE_DEVICES` list is supported, but
 the physical `nvidia-smi` index is never assumed to equal `LOCAL_RANK`; missing,
 ambiguous, or inconsistent UUID mappings abort before the NCCL timing probe.
 
-## Canonical strong-scaling run
+### Canonical strong-scaling run
 
 Freeze a fresh source lock after the checkout and environment candidate are
 final:
@@ -209,14 +295,11 @@ single-tensor AdamW (`foreach=False`, `fused=False`); parameters, gradients,
 AdamW state, and DDP buckets are checked as FP32 while forward/backward compute
 uses BF16 autocast.
 
-Canonical `elapsed_s` and `tokens_per_second` use the `core_update` boundary:
-the synchronized forward/backward pass (including DDP gradient reduction),
-gradient clipping, and optimizer step. The fail-fast cross-rank finite guard is
-reported separately as `critical_rank_finite_guard_elapsed_s`; the inclusive
-guarded loop is `critical_rank_guarded_update_elapsed_s`. Mean-loss reduction
-runs after both timers. Only `core_update` enters the scaling aggregate, so the
-extra diagnostic collective on multi-rank runs cannot masquerade as model
-scaling time.
+The canonical fields follow the composed `core_update` definition in
+[Method](#method). The excluded cross-rank finite-check interval is reported as
+`critical_rank_finite_guard_elapsed_s`, and the contiguous inclusive interval as
+`critical_rank_guarded_update_elapsed_s`. Only `core_update` enters the scaling
+aggregate.
 
 Do not report scaling numbers until
 `artifacts/private/training/strong-scaling/aggregate.json` exists and its nine
@@ -224,7 +307,7 @@ runs have passed. The aggregate embeds SHA-256 references for the frozen plan,
 completed journal, source lock, both readiness reports, and every raw metrics
 and final-checkpoint artifact.
 
-## Four-rank interruption and exact replay
+### Four-rank checkpoint/replay run
 
 The default trajectory workload is the short 275,621,120-parameter BF16
 four-rank config, not the CPU smoke test:
@@ -256,19 +339,20 @@ isolated-profiler configs remain unchanged. If this strict first-stage recipe
 raises on an unsupported operation or still diverges, TF32 and SDPA backend
 selection are separate follow-up experiments rather than bundled changes.
 
-`trajectory-275m-w4-fixed-buckets.json` is an isolated trajectory diagnostic
-with the same model, data, precision, and update recipe. It sets DDP
-`find_unused_parameters=True` only to suppress the PyTorch 2.10 reducer's bucket
-rebuild and test whether reducer lifecycle explains a resume boundary. The model
-is expected to use every parameter; this setting adds an autograd-graph traversal
-and is not used in the throughput matrix. Select it explicitly with
+`trajectory-275m-w4-fixed-buckets.json` is a matched trajectory diagnostic with
+the same model, data, precision, and update recipe. It sets DDP
+`find_unused_parameters=True` with `static_graph=False`, changing the reducer
+lifecycle observed around the resume boundary. Its exact match is consistent
+with reducer lifecycle effects but does not establish a unique cause. The model
+uses every parameter; this setting adds an autograd-graph traversal and is not
+used in the throughput matrix. Select it explicitly with
 `--config configs/training/trajectory-275m-w4-fixed-buckets.json`; its config
 stem gives it a separate artifact directory from the default first-stage run.
 
 The CPU smoke config exercises the same code in CI, but it is not evidence that
 the four-rank path passed.
 
-## Isolated profiler run
+### Isolated profiler run
 
 ```bash
 python tools/run_training_matrix.py profile \
@@ -283,10 +367,10 @@ Each rank writes a Chrome trace and a key-averages JSON file below
 the canonical matrix, and the profile journal explicitly marks it ineligible
 for canonical aggregation.
 
-## TinyStories-derived byte-file short run
+### TinyStories-derived byte-corpus run
 
-Prepare data before or at the beginning of rental. The builder pins the upstream
-revision, verifies source bytes, selects complete documents into disjoint
+Prepare the corpus before GPU execution. The builder pins the upstream revision,
+verifies source bytes, selects complete documents into disjoint
 64 MiB/4 MiB train/validation files, and writes
 `training-corpus-manifest-v0.1`. Audio, corpora, checkpoints, and reports remain
 private and are never release files.
@@ -308,14 +392,16 @@ python tools/run_training_matrix.py real-data \
   --preflight-report artifacts/private/training/preflight-4x3090.json
 ```
 
-The committed real-data workload uses four ranks, 275,621,120 parameters, 200
-updates, and validation every 20 updates. The runner verifies the manifest
-hashes and exact 64 MiB/4 MiB byte budgets before launch, then refuses success
-unless finite validation-loss records exist. These losses show only that the
-pipeline trained and evaluated on the declared byte corpus; they are not a
-quality comparison with a tokenizer-based language model.
+The byte-corpus workload uses four ranks, 275,621,120 parameters, 200 updates,
+and validation every 20 updates. At each evaluation, eight batches per rank,
+four sequences per batch, and 512 next-byte targets per sequence produce 128
+deterministic pseudorandom windows and 65,536 sampled targets across four ranks.
+Window starts are sampled with replacement and may overlap; the validation
+sampler advances its CPU RNG, so successive records use different positions
+rather than one fixed exhaustive set. The runner also verifies the manifest
+hashes and 64 MiB/4 MiB byte budgets before launch.
 
-## Evidence boundaries
+## Limitations and evidence boundaries
 
 Safe claims require the corresponding private artifact:
 
@@ -325,10 +411,12 @@ Safe claims require the corresponding private artifact:
 - Parameter counts and fixed tokens/update are code/config invariants.
 - Throughput, scaling efficiency, and peak memory require the completed
   nine-run aggregate and raw JSONL.
-- Exact interruption/resume requires a passing trajectory comparison.
+- A checkpoint/replay match requires a passing trajectory comparison.
 - Profiler findings require all four rank traces and key-averages files.
 - Training/validation behavior requires the TinyStories-derived corpus
   manifest and the completed real-data journal.
 
-Never convert a dry-run plan, CPU smoke result, skipped GPU test, theoretical
-memory estimate, synthetic loss, or incomplete journal into a measured claim.
+The experiment is single-node DDP and does not measure FSDP, tensor, pipeline,
+or multi-node parallelism. Dry-run plans, CPU smoke results, skipped GPU tests,
+capacity estimates, synthetic losses, and incomplete journals do not
+substantiate measured GPU results.

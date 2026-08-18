@@ -15,7 +15,42 @@ be added intentionally in code and tests.
 
 Allowed files are UTF-8 text from a conservative extension set and are bounded in
 size. Symbolic links and binary payloads fail. Model files, audio, archives,
-office documents, profiler captures, and generated results are not source files.
+office documents, profiler captures, and raw generated results are not source
+files. The sole generated-evidence exception is a checked public matrix summary
+below `benchmarks/results/`. The release procedure creates that file with
+`faster-glm-asr-public-matrix publish` from all 18 admitted private aggregates;
+the guard can enforce its public shape and content policy, but cannot infer the
+command that produced an otherwise valid JSON file.
+
+The public matrix schema is an exact nested allowlist. It has no per-utterance
+rows and rejects transcripts, generated-token values, audio or manifest
+fingerprints, prepared-input fingerprints, absolute paths, Git branches, UUIDs,
+PCI addresses, CUDA visibility settings, hostnames, commands, and logs. It also
+omits WER/CER from the three-item performance subset. Only the hardware class,
+software versions, protocol, duration-bucket latency/RTF, bounded request-memory
+metrics, exact-token parity gate, and five fixed baseline-to-candidate comparisons
+are admitted.
+
+The five ratios stay within prepared-request-compatible runtime families: one
+Hugging Face cache ablation and four custom-runtime cache/generation ablations.
+No direct Hugging Face-to-custom speedup is published. Matrix-wide exact-token
+parity still covers all six implementations as a correctness gate, but does not
+assert that the Hugging Face and custom prepared-request tensor contracts are
+identical.
+
+For a strict release, the guard first requires the ordinary stage-zero schema
+blob selected for commit to equal the non-reparse worktree schema byte for byte.
+It then uses that verified current validator for every worktree, index, and
+historical `benchmarks/results/*.json` blob; historical Python is never executed.
+Invalid JSON, duplicate keys, non-finite numbers, validator import failure, and
+schema-origin drift all fail closed. A published file is created atomically and
+never overwrites an existing result.
+
+The public evidence hashes are audit handles recomputed by `export` and
+`publish`, not self-authenticating proof. `check` and the release guard validate
+only the exact public structure, metric consistency, and privacy allowlist. In
+the absence of the private evidence or a separately trusted attestation, those
+hash strings do not prove that a file originated from `publish`.
 
 ## Content checks
 
